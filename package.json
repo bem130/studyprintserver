@@ -1,0 +1,12 @@
+{
+  "name": "studyprintserver",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build:frontend": "tsc -p tsconfig.json",
+    "test:frontend": "npm run build:frontend && node --test frontend/tests/*.test.mjs"
+  },
+  "devDependencies": {
+    "typescript": "^5.0.0"
+  }
+}

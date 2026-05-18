@@ -1,4 +1,3 @@
-/target/
-/.vs/
-/.vscode/
-*.tmp
+node_modules/
+static/generated/
+target/
