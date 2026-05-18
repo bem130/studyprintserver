@@ -16,6 +16,13 @@ Default paths:
 
 Open `http://127.0.0.1:7878`.
 
+## Viewer
+
+- Theme toggle switches the UI between light and dark.
+- Image tone mode cycles `Auto`, `Invert`, and `Paper`.
+- Inverted image mode uses OKLab lightness inversion: paper white becomes dark, black ink becomes light, and pen hue direction is preserved as much as display gamut allows.
+- Image tools support rotate, zoom, fit reset, fullscreen, and opening the original PNG.
+
 ## Checks
 
 ```powershell

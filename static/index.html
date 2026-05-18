@@ -13,10 +13,13 @@
           <h1>StudyPrint Viewer</h1>
           <p id="statusLine">Loading index...</p>
         </div>
-        <div class="metrics" aria-label="summary">
-          <div><span id="metricContents">0</span><small>contents</small></div>
-          <div><span id="metricFields">0</span><small>fields</small></div>
-          <div><span id="metricFormulas">0</span><small>formulas</small></div>
+        <div class="topbar-right">
+          <div class="metrics" aria-label="summary">
+            <div><span id="metricContents">0</span><small>contents</small></div>
+            <div><span id="metricFields">0</span><small>fields</small></div>
+            <div><span id="metricFormulas">0</span><small>formulas</small></div>
+          </div>
+          <button id="themeToggle" class="tool-button wide" type="button">Dark</button>
         </div>
       </header>
 
@@ -54,10 +57,22 @@
               <h2 id="detailTitle">Select a page</h2>
               <p id="detailMeta"></p>
             </div>
-            <a id="openImage" class="image-link" href="#" target="_blank" rel="noreferrer">Image</a>
+            <div class="viewer-actions" aria-label="image tools">
+              <button id="rotateLeft" class="tool-button" type="button" title="Rotate left">↺</button>
+              <button id="rotateRight" class="tool-button" type="button" title="Rotate right">↻</button>
+              <button id="zoomOut" class="tool-button" type="button" title="Zoom out">−</button>
+              <button id="zoomIn" class="tool-button" type="button" title="Zoom in">+</button>
+              <button id="resetView" class="tool-button wide" type="button">Fit</button>
+              <button id="imageToneToggle" class="tool-button wide" type="button">Auto</button>
+              <button id="fullscreenButton" class="tool-button wide" type="button">Full</button>
+              <a id="openImage" class="image-link" href="#" target="_blank" rel="noreferrer">Open</a>
+            </div>
           </div>
-          <div class="preview">
-            <img id="detailImage" alt="" />
+          <div id="previewPane" class="preview">
+            <div id="imageStage" class="image-stage">
+              <img id="detailImage" alt="" />
+              <canvas id="darkImageCanvas" aria-hidden="true"></canvas>
+            </div>
           </div>
           <div id="detailTags" class="detail-tags"></div>
           <pre id="detailText"></pre>
