@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>StudyPrint Viewer</title>
+    <link rel="stylesheet" href="/assets/app.css" />
+  </head>
+  <body>
+    <div class="shell">
+      <header class="topbar">
+        <div>
+          <h1>StudyPrint Viewer</h1>
+          <p id="statusLine">Loading index...</p>
+        </div>
+        <div class="metrics" aria-label="summary">
+          <div><span id="metricContents">0</span><small>contents</small></div>
+          <div><span id="metricFields">0</span><small>fields</small></div>
+          <div><span id="metricFormulas">0</span><small>formulas</small></div>
+        </div>
+      </header>
+
+      <main class="workspace">
+        <aside class="filters" aria-label="filters">
+          <label class="filter-block">
+            <span>Search</span>
+            <input id="searchInput" type="search" autocomplete="off" />
+          </label>
+          <label class="filter-block">
+            <span>Field</span>
+            <select id="fieldSelect"></select>
+          </label>
+          <label class="filter-block">
+            <span>Date</span>
+            <select id="dateSelect"></select>
+          </label>
+          <div class="filter-block">
+            <span>Tags</span>
+            <div id="tagList" class="tag-list"></div>
+          </div>
+        </aside>
+
+        <section class="results" aria-label="contents">
+          <div class="results-head">
+            <strong id="resultCount">0</strong>
+            <span>matches</span>
+          </div>
+          <div id="contentList" class="content-list"></div>
+        </section>
+
+        <section class="detail" aria-label="detail">
+          <div class="detail-head">
+            <div>
+              <h2 id="detailTitle">Select a page</h2>
+              <p id="detailMeta"></p>
+            </div>
+            <a id="openImage" class="image-link" href="#" target="_blank" rel="noreferrer">Image</a>
+          </div>
+          <div class="preview">
+            <img id="detailImage" alt="" />
+          </div>
+          <div id="detailTags" class="detail-tags"></div>
+          <pre id="detailText"></pre>
+        </section>
+      </main>
+    </div>
+    <script src="/assets/app.js"></script>
+  </body>
+</html>
