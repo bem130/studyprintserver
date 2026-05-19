@@ -3,12 +3,12 @@ import { h } from "./vdom.js";
 const STUDYPRINT_NS = "urn:slf:studyprint:0.5";
 const BODY_DISPLAY_SKIPPED_ELEMENTS = new Set(["tex", "altText"]);
 const BLOCK_FORMULA_DISPLAY = "block";
-export function viewStudyPrintBody(xmlText) {
+export function viewStudyPrintBody(xmlText, globalContentId) {
     const documentOption = parseXmlDocument(xmlText);
     if (!isSome(documentOption)) {
         return h("pre", { id: "detailText", class: "studyprint-body studyprint-body-error" }, xmlText);
     }
-    const bodyOriginal = firstElementByLocalName(documentOption.value, "body_original");
+    const bodyOriginal = bodyOriginalForContent(documentOption.value, globalContentId);
     if (!isSome(bodyOriginal)) {
         return h("div", { id: "detailText", class: "studyprint-body studyprint-body-error" }, h("p", {}, "body_original is missing."));
     }
@@ -128,14 +128,67 @@ function shouldRenderBodyNode(node) {
     return !BODY_DISPLAY_SKIPPED_ELEMENTS.has(node.localName);
 }
 function firstElementByLocalName(document, localName) {
-    const namespaced = document.getElementsByTagNameNS(STUDYPRINT_NS, localName);
-    const firstNamespaced = nullableOption(namespaced.item(0));
-    if (isSome(firstNamespaced)) {
-        return some(firstNamespaced.value);
+    const elements = elementsByLocalName(document, localName);
+    return firstArrayItem(elements);
+}
+function bodyOriginalForContent(document, globalContentId) {
+    const contentId = contentIdFromGlobal(globalContentId);
+    if (isSome(contentId)) {
+        const content = contentElementById(document, contentId.value);
+        if (isSome(content)) {
+            const body = firstDescendantByLocalName(content.value, "body_original");
+            if (isSome(body))
+                return body;
+        }
     }
-    const fallback = document.getElementsByTagName(localName);
+    return firstElementByLocalName(document, "body_original");
+}
+function contentIdFromGlobal(globalContentId) {
+    const parts = globalContentId.split("#");
+    if (parts.length < 2)
+        return none();
+    return firstArrayItem(parts.slice(parts.length - 1));
+}
+function contentElementById(document, contentId) {
+    for (const element of elementsByLocalName(document, "content")) {
+        const id = attributeOption(element, "id");
+        if (isSome(id) && id.value === contentId)
+            return some(element);
+    }
+    return none();
+}
+function firstDescendantByLocalName(element, localName) {
+    const namespaced = element.getElementsByTagNameNS(STUDYPRINT_NS, localName);
+    const firstNamespaced = nullableOption(namespaced.item(0));
+    if (isSome(firstNamespaced))
+        return some(firstNamespaced.value);
+    const fallback = element.getElementsByTagName(localName);
     const firstFallback = nullableOption(fallback.item(0));
     return isSome(firstFallback) ? some(firstFallback.value) : none();
+}
+function elementsByLocalName(document, localName) {
+    const elements = [];
+    const namespaced = document.getElementsByTagNameNS(STUDYPRINT_NS, localName);
+    for (let index = 0; index < namespaced.length; index += 1) {
+        const element = nullableOption(namespaced.item(index));
+        if (isSome(element))
+            elements.push(element.value);
+    }
+    if (elements.length > 0)
+        return elements;
+    const fallback = document.getElementsByTagName(localName);
+    for (let index = 0; index < fallback.length; index += 1) {
+        const element = nullableOption(fallback.item(index));
+        if (isSome(element))
+            elements.push(element.value);
+    }
+    return elements;
+}
+function firstArrayItem(values) {
+    for (const value of values) {
+        return some(value);
+    }
+    return none();
 }
 function firstDirectChild(element, localName) {
     for (let index = 0; index < element.children.length; index += 1) {

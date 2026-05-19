@@ -109,36 +109,36 @@ function patchChildren(
   oldChildren: Array<VNode | string>,
   newChildren: Array<VNode | string>,
 ): void {
-  const oldKeyed = keyedChildren(oldChildren, parent.childNodes);
+  const oldDomChildren = Array.from(parent.childNodes);
+  const oldKeyed = keyedChildren(oldChildren, oldDomChildren);
+  const usedOldDom = new Set<Node>();
   const nextDomChildren: Node[] = [];
+  let oldUnkeyedCursor = 0;
 
   for (let index = 0; index < newChildren.length; index += 1) {
     const newChild = arrayItem(newChildren, index);
     if (!isSome(newChild)) continue;
     const key = vnodeKey(newChild.value);
-    const keyed = isSome(key)
-      ? mapItem(oldKeyed, key.value)
-      : none<{ node: VNode; dom: Node }>();
-    const currentDom = isSome(keyed)
-      ? some(keyed.value.dom)
-      : childNode(parent.childNodes, index);
-    const oldChild = isSome(keyed)
-      ? some<VNode | string>(keyed.value.node)
-      : arrayItem(oldChildren, index);
+    const keyed = isSome(key) ? mapItem(oldKeyed, key.value) : none<{ node: VNode; dom: Node }>();
+    const match = isSome(keyed)
+      ? some<{ node: VNode | string; dom: Node }>(keyed.value)
+      : nextUnkeyedOldChild(oldChildren, oldDomChildren, usedOldDom, oldUnkeyedCursor);
+    if (!isSome(keyed)) {
+      oldUnkeyedCursor = nextUnkeyedCursor(oldChildren, oldUnkeyedCursor);
+    }
 
-    if (!isSome(currentDom) || !isSome(oldChild)) {
+    if (!isSome(match)) {
       const created = createElement(newChild.value);
       parent.append(created);
       nextDomChildren.push(created);
     } else {
-      nextDomChildren.push(patchNode(parent, currentDom.value, oldChild.value, newChild.value));
+      usedOldDom.add(match.value.dom);
+      nextDomChildren.push(patchNode(parent, match.value.dom, match.value.node, newChild.value));
     }
   }
 
-  while (parent.childNodes.length > newChildren.length) {
-    const extra = childNode(parent.childNodes, newChildren.length);
-    if (isSome(extra)) extra.value.remove();
-    else return;
+  for (const child of Array.from(parent.childNodes)) {
+    if (!nextDomChildren.includes(child)) child.remove();
   }
 
   nextDomChildren.forEach((child, index) => {
@@ -154,16 +154,42 @@ function insertChild(parent: Element, child: Node, before: Option<Node>): void {
   else parent.append(child);
 }
 
-function keyedChildren(children: Array<VNode | string>, nodes: NodeListOf<ChildNode>): Map<string, { node: VNode; dom: Node }> {
+function keyedChildren(children: Array<VNode | string>, nodes: ChildNode[]): Map<string, { node: VNode; dom: Node }> {
   const keyed = new Map<string, { node: VNode; dom: Node }>();
   children.forEach((child, index) => {
     const key = vnodeKey(child);
     if (isSome(key)) {
-      const dom = childNode(nodes, index);
+      const dom = arrayItem(nodes, index);
       if (isSome(dom) && typeof child !== "string") keyed.set(key.value, { node: child, dom: dom.value });
     }
   });
   return keyed;
+}
+
+function nextUnkeyedOldChild(
+  oldChildren: Array<VNode | string>,
+  oldDomChildren: ChildNode[],
+  usedOldDom: Set<Node>,
+  startIndex: number,
+): Option<{ node: VNode | string; dom: Node }> {
+  for (let index = startIndex; index < oldChildren.length; index += 1) {
+    const oldChild = arrayItem(oldChildren, index);
+    const dom = arrayItem(oldDomChildren, index);
+    if (isSome(oldChild) && isSome(dom) && !isSome(vnodeKey(oldChild.value)) && !usedOldDom.has(dom.value)) {
+      return some({ node: oldChild.value, dom: dom.value });
+    }
+  }
+  return none();
+}
+
+function nextUnkeyedCursor(oldChildren: Array<VNode | string>, startIndex: number): number {
+  for (let index = startIndex; index < oldChildren.length; index += 1) {
+    const oldChild = arrayItem(oldChildren, index);
+    if (isSome(oldChild) && !isSome(vnodeKey(oldChild.value))) {
+      return index + 1;
+    }
+  }
+  return oldChildren.length;
 }
 
 function patchProps(element: Element, oldProps: VProps, newProps: VProps): void {

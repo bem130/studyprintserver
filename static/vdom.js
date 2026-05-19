@@ -74,37 +74,36 @@ function patchNode(parent, domNode, oldNode, newNode) {
     return domNode;
 }
 function patchChildren(parent, oldChildren, newChildren) {
-    const oldKeyed = keyedChildren(oldChildren, parent.childNodes);
+    const oldDomChildren = Array.from(parent.childNodes);
+    const oldKeyed = keyedChildren(oldChildren, oldDomChildren);
+    const usedOldDom = new Set();
     const nextDomChildren = [];
+    let oldUnkeyedCursor = 0;
     for (let index = 0; index < newChildren.length; index += 1) {
         const newChild = arrayItem(newChildren, index);
         if (!isSome(newChild))
             continue;
         const key = vnodeKey(newChild.value);
-        const keyed = isSome(key)
-            ? mapItem(oldKeyed, key.value)
-            : none();
-        const currentDom = isSome(keyed)
-            ? some(keyed.value.dom)
-            : childNode(parent.childNodes, index);
-        const oldChild = isSome(keyed)
-            ? some(keyed.value.node)
-            : arrayItem(oldChildren, index);
-        if (!isSome(currentDom) || !isSome(oldChild)) {
+        const keyed = isSome(key) ? mapItem(oldKeyed, key.value) : none();
+        const match = isSome(keyed)
+            ? some(keyed.value)
+            : nextUnkeyedOldChild(oldChildren, oldDomChildren, usedOldDom, oldUnkeyedCursor);
+        if (!isSome(keyed)) {
+            oldUnkeyedCursor = nextUnkeyedCursor(oldChildren, oldUnkeyedCursor);
+        }
+        if (!isSome(match)) {
             const created = createElement(newChild.value);
             parent.append(created);
             nextDomChildren.push(created);
         }
         else {
-            nextDomChildren.push(patchNode(parent, currentDom.value, oldChild.value, newChild.value));
+            usedOldDom.add(match.value.dom);
+            nextDomChildren.push(patchNode(parent, match.value.dom, match.value.node, newChild.value));
         }
     }
-    while (parent.childNodes.length > newChildren.length) {
-        const extra = childNode(parent.childNodes, newChildren.length);
-        if (isSome(extra))
-            extra.value.remove();
-        else
-            return;
+    for (const child of Array.from(parent.childNodes)) {
+        if (!nextDomChildren.includes(child))
+            child.remove();
     }
     nextDomChildren.forEach((child, index) => {
         if (parent.childNodes[index] !== child) {
@@ -124,12 +123,31 @@ function keyedChildren(children, nodes) {
     children.forEach((child, index) => {
         const key = vnodeKey(child);
         if (isSome(key)) {
-            const dom = childNode(nodes, index);
+            const dom = arrayItem(nodes, index);
             if (isSome(dom) && typeof child !== "string")
                 keyed.set(key.value, { node: child, dom: dom.value });
         }
     });
     return keyed;
+}
+function nextUnkeyedOldChild(oldChildren, oldDomChildren, usedOldDom, startIndex) {
+    for (let index = startIndex; index < oldChildren.length; index += 1) {
+        const oldChild = arrayItem(oldChildren, index);
+        const dom = arrayItem(oldDomChildren, index);
+        if (isSome(oldChild) && isSome(dom) && !isSome(vnodeKey(oldChild.value)) && !usedOldDom.has(dom.value)) {
+            return some({ node: oldChild.value, dom: dom.value });
+        }
+    }
+    return none();
+}
+function nextUnkeyedCursor(oldChildren, startIndex) {
+    for (let index = startIndex; index < oldChildren.length; index += 1) {
+        const oldChild = arrayItem(oldChildren, index);
+        if (isSome(oldChild) && !isSome(vnodeKey(oldChild.value))) {
+            return index + 1;
+        }
+    }
+    return oldChildren.length;
 }
 function patchProps(element, oldProps, newProps) {
     const names = new Set([...Object.keys(oldProps), ...Object.keys(newProps)]);

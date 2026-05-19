@@ -81,7 +81,7 @@ export function update(model, msg) {
         case "TagToggled":
             return [normalizeSelection({ ...model, tag: nextTag(model.tag, msg.tag) }), []];
         case "SelectItem":
-            return [selectedImageReset({ ...model, selectedId: msg.id }), [{ type: "MeasureLayout" }]];
+            return [selectItem(model, msg.id), [{ type: "MeasureLayout" }]];
         case "ToggleTheme": {
             const next = invalidateProcessedImage({
                 ...model,
@@ -275,7 +275,7 @@ export function toneLabel(model) {
 function normalizeSelection(model) {
     const filtered = filteredItems(model);
     if (filtered.length === 0) {
-        return selectedImageReset({ ...model, selectedId: none() });
+        return selectItem(model, none());
     }
     if (isSome(model.selectedId)) {
         const selectedId = model.selectedId.value;
@@ -284,10 +284,7 @@ function normalizeSelection(model) {
         }
     }
     const first = firstOption(filtered);
-    return selectedImageReset({
-        ...model,
-        selectedId: optionMap(first, (item) => item.global_content_id),
-    });
+    return selectItem(model, optionMap(first, (item) => item.global_content_id));
 }
 function queryMatches(query, searchable) {
     if (query.length === 0)
@@ -352,6 +349,25 @@ function selectedImageReset(model) {
             token: model.image.token + 1,
         },
     };
+}
+function selectItem(model, selectedId) {
+    const previousImage = selectedImageUrl(model);
+    const selected = {
+        ...model,
+        selectedId,
+        rotation: 0,
+        zoom: 1,
+        collapsedXmlPaths: [],
+    };
+    const nextImage = selectedImageUrl(selected);
+    if (optionStringSame(previousImage, nextImage)) {
+        return selected;
+    }
+    return selectedImageReset(selected);
+}
+function selectedImageUrl(model) {
+    const item = selectedItem(model);
+    return optionMap(item, (value) => value.image_url);
 }
 function invalidateProcessedImage(model) {
     return {
@@ -425,6 +441,11 @@ function toggleString(values, target) {
 }
 function normalizeRotation(value) {
     return ((value % 360) + 360) % 360;
+}
+function optionStringSame(left, right) {
+    if (!isSome(left) && !isSome(right))
+        return true;
+    return isSome(left) && isSome(right) && left.value === right.value;
 }
 function fieldPathOptions(path) {
     const segments = fieldPathSegments(path);

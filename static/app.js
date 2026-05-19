@@ -362,7 +362,7 @@ function viewDetailTabPanel(current, item, send) {
     if (current.detailTab === DETAIL_TABS.XML_RAW) {
         return h("div", { class: "detail-tab-panel detail-raw-panel" }, h("a", { class: "xml-open-link", href: item.value.xml_url, target: "_blank", rel: "noreferrer" }, "Open XML"), h("pre", { id: "xmlRawText", class: "xml-raw-text" }, item.value.xml_text));
     }
-    return h("div", { class: "detail-tab-panel" }, h("div", { class: "detail-body-view" }, h("div", { id: "detailTags", class: "detail-tags" }, ...item.value.tags.map((tag) => h("span", { key: tag, class: "tag", style: tagButtonStyle(false) }, tag))), viewStudyPrintBody(item.value.xml_text)));
+    return h("div", { class: "detail-tab-panel" }, h("div", { class: "detail-body-view" }, h("div", { id: "detailTags", class: "detail-tags" }, ...item.value.tags.map((tag) => h("span", { key: tag, class: "tag", style: tagButtonStyle(false) }, tag))), viewStudyPrintBody(item.value.xml_text, item.value.global_content_id)));
 }
 function viewXmlTree(xmlText, collapsedPaths, send) {
     const documentOption = parseXmlDocument(xmlText);

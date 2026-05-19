@@ -60,6 +60,29 @@ const hierarchyItems = [
   },
 ];
 
+const sameImageItems = [
+  {
+    ...items[0],
+    global_content_id: "a1",
+    print_id: "p010",
+    title: "同じ紙面の内容1",
+    image_url: "/library/same.png",
+  },
+  {
+    ...items[0],
+    global_content_id: "a2",
+    print_id: "p010",
+    title: "同じ紙面の内容2",
+    image_url: "/library/same.png",
+  },
+  {
+    ...items[1],
+    global_content_id: "b1",
+    print_id: "p011",
+    image_url: "/library/other.png",
+  },
+];
+
 test("contents load selects the first filtered item", () => {
   const [initial] = initModel();
   const [loaded] = update(initial, { type: "ContentsLoaded", items });
@@ -168,6 +191,23 @@ test("tone changes request rendering without storing rendered image state", () =
   assert.deepEqual(Object.keys(adjusted.image).sort(), ["naturalSize", "token"]);
   assert.equal(adjusted.image.token, imageLoaded.image.token + 1);
   assert.equal(cmds.some((cmd) => cmd.type === "SyncImageProcessing"), true);
+});
+
+test("selecting another content on the same image keeps loaded image size", () => {
+  const [initial] = initModel();
+  const [loaded] = update(initial, { type: "ContentsLoaded", items: sameImageItems });
+  const [imageLoaded] = update(loaded, {
+    type: "ImageLoaded",
+    size: { width: 1200, height: 1800 },
+  });
+  const [sameImage] = update(imageLoaded, { type: "SelectItem", id: some("a2") });
+  assert.equal(isSome(sameImage.image.naturalSize), true);
+  if (isSome(sameImage.image.naturalSize)) {
+    assert.deepEqual(sameImage.image.naturalSize.value, { width: 1200, height: 1800 });
+  }
+
+  const [otherImage] = update(sameImage, { type: "SelectItem", id: some("b1") });
+  assert.equal(isSome(otherImage.image.naturalSize), false);
 });
 
 test("viewer controls are represented by typed messages", () => {

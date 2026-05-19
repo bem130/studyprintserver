@@ -633,7 +633,7 @@ function viewDetailTabPanel(current: Model, item: Option<StudyPrintItem>, send: 
         { id: "detailTags", class: "detail-tags" },
         ...item.value.tags.map((tag) => h("span", { key: tag, class: "tag", style: tagButtonStyle(false) }, tag)),
       ),
-      viewStudyPrintBody(item.value.xml_text),
+      viewStudyPrintBody(item.value.xml_text, item.value.global_content_id),
     ),
   );
 }
