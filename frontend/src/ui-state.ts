@@ -28,6 +28,8 @@ export const MIN_DETAIL_WIDTH = 360;
 export const MIN_PREVIEW_HEIGHT = 220;
 export const MIN_DETAIL_INFO_HEIGHT = 190;
 export const HANDLE_WIDTH_TOTAL = 14;
+const RESULT_ROW_SNIPPET_LIMIT = 190;
+const RESULT_ROW_SNIPPET_CONTEXT = 58;
 
 export const FULLSCREEN_TOOLS = {
   HOVER_READY: "hover_ready",
@@ -92,6 +94,23 @@ export interface AdvancedSearchState {
   caseSensitive: boolean;
 }
 
+export interface SearchHighlightSegment {
+  text: string;
+  highlighted: boolean;
+}
+
+export interface SearchHighlightSupplement {
+  label: string;
+  segments: SearchHighlightSegment[];
+}
+
+export interface ResultRowHighlights {
+  title: SearchHighlightSegment[];
+  meta: SearchHighlightSegment[];
+  text: SearchHighlightSegment[];
+  supplement: Option<SearchHighlightSupplement>;
+}
+
 export interface LayoutState {
   filtersWidth: Option<number>;
   resultsWidth: Option<number>;
@@ -129,6 +148,10 @@ export interface LayoutMetrics {
   workspaceWidth: number;
   detailHeight: number;
   detailHeadHeight: number;
+  detailBlockChrome: number;
+  detailRowGap: number;
+  previewHandleHeight: number;
+  previewChrome: Size;
   previewViewport: Size;
 }
 
@@ -332,7 +355,7 @@ export function update(model: Model, msg: Msg): [Model, Cmd[]] {
       return [applyLayoutMetrics(model, msg.metrics), []];
     case "ResizePanel": {
       const next = resizePanel(model, msg.target, msg.value, msg.metrics);
-      return [next, []];
+      return [next, [{ type: "MeasureLayout" }]];
     }
     case "FullscreenChanged":
       return [
@@ -418,6 +441,20 @@ export function searchIssueText(issue: SearchIssue): string {
     case SEARCH_ISSUES.INVALID_REGEX:
       return `Invalid regular expression: ${issue.detail}`;
   }
+}
+
+export function resultRowHighlights(search: AdvancedSearchState, item: StudyPrintItem): ResultRowHighlights {
+  const bodyText = resultRowBodyText(search, item);
+  return {
+    title: highlightVisibleResultText(search, "title", item.title),
+    meta: highlightVisibleResultText(search, "meta", resultRowMetaText(item)),
+    text: highlightVisibleResultText(search, "body", bodyText),
+    supplement: resultRowSupplement(search, item, bodyText),
+  };
+}
+
+export function resultRowMetaText(item: StudyPrintItem): string {
+  return `${item.logical_date} / ${item.primary_field_path}`;
 }
 
 export function selectedItem(model: Model): Option<StudyPrintItem> {
@@ -573,6 +610,18 @@ interface SearchSource {
   all: string;
 }
 
+type ResultVisibleField = "title" | "meta" | "body";
+
+interface TextRange {
+  start: number;
+  end: number;
+}
+
+interface CompactText {
+  text: string;
+  ranges: TextRange[];
+}
+
 function advancedSearchMatcher(search: AdvancedSearchState): Result<Option<AdvancedMatcher>, SearchIssue> {
   const query = search.query.trim();
   if (query.length === 0) return ok(none());
@@ -666,6 +715,231 @@ function sourceForScope(source: SearchSource, scope: SearchScope): string {
     case SEARCH_SCOPES.FILENAME:
       return source.filename;
   }
+}
+
+function resultRowBodyText(search: AdvancedSearchState, item: StudyPrintItem): string {
+  const source = resultRowBodySource(search, item);
+  return snippetForPlainSearch(source, search, RESULT_ROW_SNIPPET_LIMIT);
+}
+
+function resultRowBodySource(search: AdvancedSearchState, item: StudyPrintItem): string {
+  const candidates = uniqueNonEmptyStrings([inlineText(item.text), inlineText(xmlBodyText(item.xml_text))]);
+  if (search.mode === SEARCH_MODES.PLAIN && searchScopeIncludes(search.scope, SEARCH_SCOPES.BODY)) {
+    const matched = findOption(candidates, (candidate) => hasPlainHighlight(search, candidate));
+    if (isSome(matched)) return matched.value;
+  }
+  return optionValueOr(firstOption(candidates), "");
+}
+
+function resultRowSupplement(
+  search: AdvancedSearchState,
+  item: StudyPrintItem,
+  visibleBodyText: string,
+): Option<SearchHighlightSupplement> {
+  if (search.mode !== SEARCH_MODES.PLAIN) return none();
+  if (!isSome(plainSearchNeedle(search))) return none();
+  if (hasVisibleResultHighlight(search, item, visibleBodyText)) return none();
+
+  const candidates = supplementalSearchSources(search.scope, item);
+  for (const candidate of candidates) {
+    const text = inlineText(candidate.text);
+    if (hasPlainHighlight(search, text)) {
+      return some({
+        label: candidate.label,
+        segments: highlightPlainSearch(search, snippetForPlainSearch(text, search, RESULT_ROW_SNIPPET_LIMIT)),
+      });
+    }
+  }
+
+  return none();
+}
+
+function hasVisibleResultHighlight(
+  search: AdvancedSearchState,
+  item: StudyPrintItem,
+  visibleBodyText: string,
+): boolean {
+  return (
+    (visibleFieldMatchesScope("title", search.scope) && hasPlainHighlight(search, item.title)) ||
+    (visibleFieldMatchesScope("meta", search.scope) && hasPlainHighlight(search, resultRowMetaText(item))) ||
+    (visibleFieldMatchesScope("body", search.scope) && hasPlainHighlight(search, visibleBodyText))
+  );
+}
+
+function supplementalSearchSources(
+  scope: SearchScope,
+  item: StudyPrintItem,
+): Array<{ label: string; text: string }> {
+  const source = searchSource(item);
+  if (scope === SEARCH_SCOPES.TAGS) return [{ label: "Tags", text: source.tags }];
+  if (scope === SEARCH_SCOPES.FILENAME) return [{ label: "File", text: source.filename }];
+  if (scope === SEARCH_SCOPES.META) return [{ label: "Meta", text: source.meta }];
+  if (scope === SEARCH_SCOPES.ALL) {
+    return [
+      { label: "Tags", text: source.tags },
+      { label: "File", text: source.filename },
+    ];
+  }
+  return [];
+}
+
+function highlightVisibleResultText(
+  search: AdvancedSearchState,
+  field: ResultVisibleField,
+  text: string,
+): SearchHighlightSegment[] {
+  if (!visibleFieldMatchesScope(field, search.scope)) return plainHighlightSegments(text);
+  return highlightPlainSearch(search, text);
+}
+
+function visibleFieldMatchesScope(field: ResultVisibleField, scope: SearchScope): boolean {
+  if (scope === SEARCH_SCOPES.ALL) return true;
+  if (field === "title") return scope === SEARCH_SCOPES.TITLE;
+  if (field === "body") return scope === SEARCH_SCOPES.BODY;
+  return scope === SEARCH_SCOPES.META || scope === SEARCH_SCOPES.FIELD || scope === SEARCH_SCOPES.DATE;
+}
+
+function searchScopeIncludes(scope: SearchScope, target: SearchScope): boolean {
+  return scope === SEARCH_SCOPES.ALL || scope === target;
+}
+
+function snippetForPlainSearch(text: string, search: AdvancedSearchState, limit: number): string {
+  const display = inlineText(text);
+  if (display.length <= limit) return display;
+  const range = firstPlainHighlightRange(search, display);
+  if (!isSome(range)) return `${display.slice(0, limit).trim()}...`;
+
+  const maxStart = Math.max(0, display.length - limit);
+  let start = Math.max(0, range.value.start - RESULT_ROW_SNIPPET_CONTEXT);
+  start = Math.min(start, maxStart);
+  const end = Math.min(display.length, start + limit);
+  const prefix = start > 0 ? "..." : "";
+  const suffix = end < display.length ? "..." : "";
+  return `${prefix}${display.slice(start, end).trim()}${suffix}`;
+}
+
+function highlightPlainSearch(search: AdvancedSearchState, text: string): SearchHighlightSegment[] {
+  const ranges = plainHighlightRanges(search, text);
+  if (ranges.length === 0) return plainHighlightSegments(text);
+
+  const segments: SearchHighlightSegment[] = [];
+  let cursor = 0;
+  for (const range of ranges) {
+    if (range.start > cursor) {
+      segments.push({ text: text.slice(cursor, range.start), highlighted: false });
+    }
+    if (range.end > range.start) {
+      segments.push({ text: text.slice(range.start, range.end), highlighted: true });
+    }
+    cursor = Math.max(cursor, range.end);
+  }
+  if (cursor < text.length) {
+    segments.push({ text: text.slice(cursor), highlighted: false });
+  }
+  return segments;
+}
+
+function plainHighlightSegments(text: string): SearchHighlightSegment[] {
+  return [{ text, highlighted: false }];
+}
+
+function hasPlainHighlight(search: AdvancedSearchState, text: string): boolean {
+  return isSome(firstPlainHighlightRange(search, text));
+}
+
+function firstPlainHighlightRange(search: AdvancedSearchState, text: string): Option<TextRange> {
+  const ranges = plainHighlightRanges(search, text);
+  return firstOption(ranges);
+}
+
+function plainHighlightRanges(search: AdvancedSearchState, text: string): TextRange[] {
+  const needle = plainSearchNeedle(search);
+  if (!isSome(needle)) return [];
+
+  const compact = compactTextWithRanges(text, search.caseSensitive);
+  const ranges: TextRange[] = [];
+  let start = 0;
+  while (start < compact.text.length) {
+    const found = indexOfOption(compact.text, needle.value, start);
+    if (!isSome(found)) break;
+    const range = compactRangeToSourceRange(compact, found.value, found.value + needle.value.length);
+    if (isSome(range)) ranges.push(range.value);
+    start = found.value + Math.max(1, needle.value.length);
+  }
+  return mergeTextRanges(ranges);
+}
+
+function plainSearchNeedle(search: AdvancedSearchState): Option<string> {
+  if (search.mode !== SEARCH_MODES.PLAIN) return none();
+  const needle = compactSearchText(search.query, search.caseSensitive);
+  if (needle.length === 0) return none();
+  return some(needle);
+}
+
+function compactTextWithRanges(text: string, caseSensitive: boolean): CompactText {
+  const chars: string[] = [];
+  const ranges: TextRange[] = [];
+  let index = 0;
+  for (const rawChar of text) {
+    const normalized = normalizeSearchText(rawChar, caseSensitive).replace(/\s+/gu, "");
+    for (const normalizedChar of normalized) {
+      chars.push(normalizedChar);
+      ranges.push({ start: index, end: index + rawChar.length });
+    }
+    index += rawChar.length;
+  }
+  return { text: chars.join(""), ranges };
+}
+
+function compactRangeToSourceRange(compact: CompactText, start: number, end: number): Option<TextRange> {
+  const first = arrayItemOption(compact.ranges, start);
+  const last = rangeBeforeIndex(compact.ranges, end);
+  if (!isSome(first) || !isSome(last)) return none();
+  return some({ start: first.value.start, end: last.value.end });
+}
+
+function mergeTextRanges(ranges: TextRange[]): TextRange[] {
+  const merged: TextRange[] = [];
+  for (const range of ranges) {
+    const last = lastOption(merged);
+    if (!isSome(last)) {
+      merged.push(range);
+    } else if (range.start <= last.value.end) {
+      last.value.end = Math.max(last.value.end, range.end);
+    } else {
+      merged.push(range);
+    }
+  }
+  return merged;
+}
+
+function rangeBeforeIndex<T>(values: T[], index: number): Option<T> {
+  if (index <= 0) return none();
+  return arrayItemOption(values, index - 1);
+}
+
+function arrayItemOption<T>(values: T[], index: number): Option<T> {
+  if (index < 0) return none();
+  if (index >= values.length) return none();
+  return some(values[index] as T);
+}
+
+function indexOfOption(haystack: string, needle: string, start: number): Option<number> {
+  const index = haystack.indexOf(needle, start);
+  if (index < 0) return none();
+  return some(index);
+}
+
+function uniqueNonEmptyStrings(values: string[]): string[] {
+  const result: string[] = [];
+  for (const value of values) {
+    if (value.length > 0 && !result.includes(value)) result.push(value);
+  }
+  return result;
+}
+
+function inlineText(value: string): string {
+  return value.replace(/\s+/gu, " ").trim();
 }
 
 function matcherMatches(matcher: AdvancedMatcher, source: string): boolean {
@@ -889,11 +1163,14 @@ function resizePanel(
 }
 
 function clampLayout(layout: LayoutState, metrics: LayoutMetrics): LayoutState {
+  const previewHeight = clampPreviewHeight(layout.previewHeight, metrics);
+  const previewViewport = previewViewportForHeight(metrics, previewHeight);
   const available = metrics.workspaceWidth - MIN_DETAIL_WIDTH - HANDLE_WIDTH_TOTAL;
   if (available < MIN_FILTERS_WIDTH + MIN_RESULTS_WIDTH) {
     return {
       ...layout,
-      previewHeight: clampPreviewHeight(layout.previewHeight, metrics),
+      previewHeight,
+      previewViewport: some(previewViewport),
     };
   }
 
@@ -912,15 +1189,29 @@ function clampLayout(layout: LayoutState, metrics: LayoutMetrics): LayoutState {
     ...layout,
     filtersWidth: some(Math.round(filtersWidth)),
     resultsWidth: some(Math.round(resultsWidth)),
-    previewHeight: clampPreviewHeight(layout.previewHeight, metrics),
+    previewHeight,
+    previewViewport: some(previewViewport),
   };
 }
 
 function clampPreviewHeight(value: Option<number>, metrics: LayoutMetrics): Option<number> {
   if (!isSome(value)) return none();
-  const reservedHeight = metrics.detailHeadHeight + MIN_DETAIL_INFO_HEIGHT + 64;
+  const reservedHeight =
+    metrics.detailHeadHeight +
+    MIN_DETAIL_INFO_HEIGHT +
+    metrics.detailBlockChrome +
+    metrics.previewHandleHeight +
+    metrics.detailRowGap * 3;
   const maxPreviewHeight = Math.max(MIN_PREVIEW_HEIGHT, metrics.detailHeight - reservedHeight);
   return some(Math.round(clamp(value.value, MIN_PREVIEW_HEIGHT, maxPreviewHeight)));
+}
+
+function previewViewportForHeight(metrics: LayoutMetrics, previewHeight: Option<number>): Size {
+  if (!isSome(previewHeight)) return metrics.previewViewport;
+  return {
+    width: metrics.previewViewport.width,
+    height: Math.max(120, Math.round(previewHeight.value - metrics.previewChrome.height)),
+  };
 }
 
 function toggleString(values: string[], target: string): string[] {

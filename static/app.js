@@ -1,5 +1,5 @@
 import { FIT_MODES, THEMES, TONE_BRIGHTNESS_MAX, TONE_BRIGHTNESS_MIN, TONE_CONTRAST_MAX, TONE_CONTRAST_MIN, lightnessRangeFromHistogram, mediaLayout, sourceLightness, srgbToOklab, toneOptions, } from "./viewer-core.js";
-import { DETAIL_TABS, FULLSCREEN_TARGETS, FULLSCREEN_TOOLS, MAX_ZOOM, MIN_ZOOM, SEARCH_MODES, SEARCH_SCOPES, ZOOM_STEP, activeSourceSize, advancedSearchIssue, dateCounts, fieldCounts, filteredItems, initModel, metricValues, needsCanvasProcessing, selectedItem, searchIssueText, searchScopeFromValue, tagCounts, toneAdjustmentsActive, toneLabel, update, } from "./ui-state.js";
+import { DETAIL_TABS, FULLSCREEN_TARGETS, FULLSCREEN_TOOLS, MAX_ZOOM, MIN_ZOOM, SEARCH_MODES, SEARCH_SCOPES, ZOOM_STEP, activeSourceSize, advancedSearchIssue, dateCounts, fieldCounts, filteredItems, initModel, metricValues, needsCanvasProcessing, resultRowHighlights, selectedItem, searchIssueText, searchScopeFromValue, tagCounts, toneAdjustmentsActive, toneLabel, update, } from "./ui-state.js";
 import { isSome, none, optionValueOr, some } from "./option.js";
 import { h, mount, patch } from "./vdom.js";
 import { viewStudyPrintBody } from "./xml-body-view.js";
@@ -346,13 +346,26 @@ function resultRowSelected(current, item) {
     return isSome(current.selectedId) && item.global_content_id === current.selectedId.value;
 }
 function viewResultRow(current, item, send) {
+    const highlights = resultRowHighlights(current.advancedSearch, item);
+    const supplementChildren = [];
+    if (isSome(highlights.supplement)) {
+        supplementChildren.push(h("div", { class: "row-match" }, h("span", { class: "row-match-label" }, `${highlights.supplement.value.label}: `), ...viewHighlightSegments(highlights.supplement.value.segments)));
+    }
     return h("button", {
         key: item.global_content_id,
         type: "button",
         class: "content-row",
         style: resultRowStyle(resultRowSelected(current, item)),
         onClick: () => send({ type: "SelectItem", id: some(item.global_content_id) }),
-    }, h("div", { class: "row-title" }, item.title), h("div", { class: "row-meta" }, `${item.logical_date} / ${item.primary_field_path}`), h("div", { class: "row-text" }, item.text.slice(0, 160)));
+    }, h("div", { class: "row-title" }, ...viewHighlightSegments(highlights.title)), h("div", { class: "row-meta" }, ...viewHighlightSegments(highlights.meta)), h("div", { class: "row-text" }, ...viewHighlightSegments(highlights.text)), supplementChildren);
+}
+function viewHighlightSegments(segments) {
+    return segments.map((segment, index) => {
+        if (segment.highlighted) {
+            return h("mark", { key: `hit-${index}`, class: "search-hit" }, segment.text);
+        }
+        return segment.text;
+    });
 }
 function viewDetail(current, send) {
     const item = selectedItem(current);
@@ -363,10 +376,15 @@ function viewDetail(current, send) {
         style: detailStyle(current),
     }, h("header", { class: "detail-head" }, h("div", { class: "detail-title-block" }, h("h2", { id: "detailTitle" }, isSome(item) ? item.value.title : "Select a page"), h("p", { id: "detailMeta" }, isSome(item)
         ? `${item.value.print_id} / ${item.value.logical_date} / ${item.value.primary_field_path}`
-        : "")), viewDetailTools(current, send)), viewPreview(current, item, send), resizeHandle("previewResize", "Resize preview", "horizontal", (event) => beginResize(event, "preview")), viewDetailInfo(current, item, send));
+        : ""))), viewPreview(current, item, send), resizeHandle("previewResize", "Resize preview", "horizontal", (event) => beginResize(event, "preview")), viewDetailInfo(current, item, send));
 }
 function viewDetailInfo(current, item, send) {
-    return h("section", { id: "detailInfo", class: "detail-info", "aria-label": "body and xml" }, viewDetailTabs(current, send), viewDetailTabPanel(current, item, send));
+    return h("section", {
+        id: "detailInfo",
+        class: "detail-info",
+        "aria-label": "body and xml",
+        style: detailInfoStyle(current),
+    }, viewDetailTabs(current, send), viewDetailTabPanel(current, item, send));
 }
 function viewDetailTabs(current, send) {
     const bodyFullscreen = fullscreenActive(current, FULLSCREEN_TARGETS.BODY);
@@ -492,9 +510,38 @@ function xmlNodeHasDisplayContent(node) {
 function nodeText(node) {
     return optionValueOr(nullableOption(node.nodeValue), "");
 }
-function viewDetailTools(current, send) {
+function viewPreviewTools(current, send) {
     const previewFullscreen = fullscreenActive(current, FULLSCREEN_TARGETS.PREVIEW);
-    return h("div", { class: "detail-tools", "aria-label": "image tools" }, h("div", { class: "tool-row" }, toolButton("L", {
+    const panelOpen = previewToolsPanelOpen(current);
+    return h("div", {
+        id: "previewTools",
+        class: "preview-tools",
+        "aria-label": "image tools",
+        style: previewToolsStyle(current),
+        onPointerEnter: () => send({ type: "FullscreenToolsPointerEntered" }),
+        onPointerLeave: () => send({ type: "FullscreenToolsPointerLeft" }),
+    }, h("button", {
+        id: "previewToolsTab",
+        class: "preview-tools-tab",
+        style: previewToolsTabStyle(panelOpen),
+        type: "button",
+        title: "Show or hide image tools",
+        onClick: () => send({ type: "ToggleFullscreenTools" }),
+    }, "Tools"), h("div", {
+        class: "preview-tools-panel",
+        "aria-label": "image tools panel",
+        style: previewToolsPanelStyle(panelOpen),
+    }, h("div", { class: "preview-tools-panel-head" }, h("span", {}, "Image"), toolButton("Pin", {
+        ...toolButtonBase(),
+        id: some("previewToolsPin"),
+        wide: true,
+        active: current.fullscreenTools === FULLSCREEN_TOOLS.PINNED,
+        onClick: some(() => send({ type: "ToggleFullscreenToolsPin" })),
+    }), toolButton("Hide", {
+        ...toolButtonBase(),
+        wide: true,
+        onClick: some(() => send({ type: "HideFullscreenTools" })),
+    })), h("div", { class: "tool-row" }, toolButton("L", {
         ...toolButtonBase(),
         title: some("Rotate left"),
         onClick: some(() => send({ type: "RotateBy", degrees: -90 })),
@@ -517,6 +564,25 @@ function viewDetailTools(current, send) {
         id: some("resetView"),
         wide: true,
         onClick: some(() => send({ type: "ResetView" })),
+    })), h("div", { class: "tool-row" }, fitButton("Width", FIT_MODES.WIDTH, current, send), fitButton("Height", FIT_MODES.HEIGHT, current, send), fitButton("Page", FIT_MODES.BOTH, current, send), toolButton("Norm", {
+        ...toolButtonBase(),
+        id: some("normalizeToggle"),
+        wide: true,
+        active: current.tone.autoNormalize,
+        onClick: some(() => send({ type: "ToggleNormalize" })),
+    }), toolButton("Tone 0", {
+        ...toolButtonBase(),
+        id: some("resetToneAdjust"),
+        wide: true,
+        active: toneAdjustmentsActive(current),
+        onClick: some(() => send({ type: "ResetToneAdjustments" })),
+    })), h("div", { class: "tool-row" }, toolButton(themeLabel(current), {
+        ...toolButtonBase(),
+        id: some("previewThemeToggle"),
+        wide: true,
+        active: current.theme === THEMES.DARK,
+        title: some("Toggle theme"),
+        onClick: some(() => send({ type: "ToggleTheme" })),
     }), toolButton(toneLabel(current), {
         ...toolButtonBase(),
         id: some("toneModeToggle"),
@@ -529,19 +595,7 @@ function viewDetailTools(current, send) {
         wide: true,
         active: previewFullscreen,
         onClick: some(() => send({ type: "RequestFullscreenToggle", target: FULLSCREEN_TARGETS.PREVIEW })),
-    }), viewOpenImageLink(current)), h("div", { class: "tool-row" }, fitButton("Width", FIT_MODES.WIDTH, current, send), fitButton("Height", FIT_MODES.HEIGHT, current, send), fitButton("Page", FIT_MODES.BOTH, current, send), toolButton("Norm", {
-        ...toolButtonBase(),
-        id: some("normalizeToggle"),
-        wide: true,
-        active: current.tone.autoNormalize,
-        onClick: some(() => send({ type: "ToggleNormalize" })),
-    }), toolButton("Tone 0", {
-        ...toolButtonBase(),
-        id: some("resetToneAdjust"),
-        wide: true,
-        active: toneAdjustmentsActive(current),
-        onClick: some(() => send({ type: "ResetToneAdjustments" })),
-    })), viewAdjustRow(current, send, false));
+    }), viewOpenImageLink(current)), viewAdjustRow(current, send, true)));
 }
 function viewOpenImageLink(current) {
     const item = selectedItem(current);
@@ -570,8 +624,12 @@ function viewPreview(current, item, send) {
     return h("section", {
         id: "previewPane",
         class: "preview",
-        style: previewStyle(current, imageLayout),
+        style: previewStyle(current),
         "aria-label": "image preview",
+    }, h("div", {
+        id: "imageViewport",
+        class: "image-viewport",
+        style: imageViewportStyle(imageLayout),
     }, h("div", {
         id: "imageStage",
         class: "image-stage",
@@ -592,79 +650,12 @@ function viewPreview(current, item, send) {
         id: "darkImageCanvas",
         "aria-hidden": "true",
         style: canvasMediaStyle(mediaBase, canvasVisible),
-    })), fullscreenToolsNodes(current, send));
+    }))), previewToolsNodes(item, current, send));
 }
-function fullscreenToolsNodes(current, send) {
-    if (!fullscreenActive(current, FULLSCREEN_TARGETS.PREVIEW))
+function previewToolsNodes(item, current, send) {
+    if (!isSome(item))
         return [];
-    return [viewFullscreenTools(current, send)];
-}
-function viewFullscreenTools(current, send) {
-    const panelOpen = fullscreenPanelOpen(current);
-    return h("div", {
-        id: "fullscreenTools",
-        class: "fullscreen-tools",
-        style: fullscreenToolsStyle(),
-        onPointerEnter: () => send({ type: "FullscreenToolsPointerEntered" }),
-        onPointerLeave: () => send({ type: "FullscreenToolsPointerLeft" }),
-    }, h("button", {
-        id: "fullscreenToolbarTab",
-        class: "fullscreen-tab",
-        style: fullscreenTabStyle(panelOpen),
-        type: "button",
-        title: "Show or hide fullscreen tools",
-        onClick: () => send({ type: "ToggleFullscreenTools" }),
-    }, "Tools"), h("div", {
-        class: "fullscreen-panel",
-        "aria-label": "fullscreen tools",
-        style: fullscreenPanelStyle(panelOpen),
-    }, h("div", { class: "fullscreen-panel-head" }, h("span", {}, "Tools"), toolButton("Pin", {
-        ...toolButtonBase(),
-        id: some("fullscreenPin"),
-        wide: true,
-        active: current.fullscreenTools === FULLSCREEN_TOOLS.PINNED,
-        onClick: some(() => send({ type: "ToggleFullscreenToolsPin" })),
-    }), toolButton("Hide", {
-        ...toolButtonBase(),
-        wide: true,
-        onClick: some(() => send({ type: "HideFullscreenTools" })),
-    })), h("div", { class: "tool-row" }, toolButton("L", {
-        ...toolButtonBase(),
-        onClick: some(() => send({ type: "RotateBy", degrees: -90 })),
-    }), toolButton("R", {
-        ...toolButtonBase(),
-        onClick: some(() => send({ type: "RotateBy", degrees: 90 })),
-    }), toolButton("-", {
-        ...toolButtonBase(),
-        onClick: some(() => send({ type: "ZoomBy", delta: -ZOOM_STEP })),
-    }), toolButton("+", {
-        ...toolButtonBase(),
-        onClick: some(() => send({ type: "ZoomBy", delta: ZOOM_STEP })),
-    }), toolButton("Reset", {
-        ...toolButtonBase(),
-        wide: true,
-        onClick: some(() => send({ type: "ResetView" })),
-    })), h("div", { class: "tool-row" }, fitButton("Width", FIT_MODES.WIDTH, current, send), fitButton("Height", FIT_MODES.HEIGHT, current, send), fitButton("Page", FIT_MODES.BOTH, current, send)), h("div", { class: "tool-row" }, toolButton(themeLabel(current), {
-        ...toolButtonBase(),
-        wide: true,
-        active: current.theme === THEMES.DARK,
-        onClick: some(() => send({ type: "ToggleTheme" })),
-    }), toolButton(toneLabel(current), {
-        ...toolButtonBase(),
-        wide: true,
-        active: toneOptions(current.tone, current.theme).inverted,
-        onClick: some(() => send({ type: "CycleTone" })),
-    }), toolButton("Norm", {
-        ...toolButtonBase(),
-        wide: true,
-        active: current.tone.autoNormalize,
-        onClick: some(() => send({ type: "ToggleNormalize" })),
-    }), toolButton("Exit", {
-        ...toolButtonBase(),
-        wide: true,
-        active: fullscreenActive(current, FULLSCREEN_TARGETS.PREVIEW),
-        onClick: some(() => send({ type: "RequestFullscreenToggle", target: FULLSCREEN_TARGETS.PREVIEW })),
-    })), viewAdjustRow(current, send, true)));
+    return [viewPreviewTools(current, send)];
 }
 function viewAdjustRow(current, send, fullscreen) {
     const resetTools = fullscreen
@@ -786,6 +777,14 @@ function imageStageStyle(current, layout) {
         height: isSome(layout) ? `${layout.value.stageHeight}px` : "1px",
     };
 }
+function imageViewportStyle(layout) {
+    if (!isSome(layout))
+        return {};
+    return {
+        justifyContent: layout.value.overflowX ? "flex-start" : "center",
+        alignItems: layout.value.overflowY ? "flex-start" : "center",
+    };
+}
 function mediaStyle(layout) {
     return isSome(layout)
         ? { width: `${layout.value.mediaWidth}px`, height: `${layout.value.mediaHeight}px` }
@@ -832,21 +831,27 @@ function toolButtonStyle(active, disabled) {
     }
     return style;
 }
-function previewStyle(current, layout) {
+function previewStyle(current) {
     const style = {};
-    if (isSome(layout)) {
-        style.justifyContent = layout.value.overflowX ? "flex-start" : "center";
-        style.alignItems = layout.value.overflowY ? "flex-start" : "center";
-    }
     if (fullscreenActive(current, FULLSCREEN_TARGETS.PREVIEW)) {
         style.width = "100vw";
         style.height = "100vh";
         style.border = "0";
         style.borderRadius = "0";
-        style.padding = "20px";
         style.background = "var(--viewer-bg)";
     }
     return style;
+}
+function detailInfoStyle(current) {
+    if (!fullscreenActive(current, FULLSCREEN_TARGETS.BODY))
+        return {};
+    return {
+        width: "100vw",
+        height: "100vh",
+        padding: "16px",
+        background: "var(--panel)",
+        overflow: "hidden",
+    };
 }
 function sourceMediaStyle(base, processedVisible) {
     return {
@@ -860,20 +865,21 @@ function canvasMediaStyle(base, processedVisible) {
         display: processedVisible ? "block" : "none",
     };
 }
-function fullscreenPanelOpen(current) {
+function previewToolsPanelOpen(current) {
     return (current.fullscreenTools === FULLSCREEN_TOOLS.HOVER_OPEN ||
         current.fullscreenTools === FULLSCREEN_TOOLS.PINNED);
 }
-function fullscreenToolsStyle() {
-    return {
+function previewToolsStyle(current) {
+    const style = {
         display: "block",
-        position: "fixed",
-        top: "16px",
-        right: "16px",
+        position: fullscreenActive(current, FULLSCREEN_TARGETS.PREVIEW) ? "fixed" : "absolute",
+        top: fullscreenActive(current, FULLSCREEN_TARGETS.PREVIEW) ? "16px" : "10px",
+        right: fullscreenActive(current, FULLSCREEN_TARGETS.PREVIEW) ? "16px" : "10px",
         zIndex: "20",
     };
+    return style;
 }
-function fullscreenTabStyle(open) {
+function previewToolsTabStyle(open) {
     return open
         ? {
             borderColor: "var(--accent)",
@@ -882,7 +888,7 @@ function fullscreenTabStyle(open) {
         }
         : {};
 }
-function fullscreenPanelStyle(open) {
+function previewToolsPanelStyle(open) {
     return open
         ? {
             opacity: "1",
@@ -927,17 +933,36 @@ function beginResize(event, target) {
     document.addEventListener("pointercancel", finish);
 }
 function readLayoutMetrics() {
+    const detail = qs("#detailPanel");
     const preview = qs("#previewPane");
-    const padding = document.fullscreenElement === preview ? 40 : 24;
+    const imageViewport = qs("#imageViewport");
+    const previewHandle = qs("#previewResize");
+    const detailStyle = getComputedStyle(detail);
+    const previewRect = preview.getBoundingClientRect();
+    const imageViewportRect = imageViewport.getBoundingClientRect();
+    const previewChrome = {
+        width: Math.max(0, Math.round(previewRect.width - imageViewportRect.width)),
+        height: Math.max(0, Math.round(previewRect.height - imageViewportRect.height)),
+    };
     return {
         workspaceWidth: qs("#workspace").clientWidth,
-        detailHeight: qs("#detailPanel").clientHeight,
+        detailHeight: detail.getBoundingClientRect().height,
         detailHeadHeight: qs(".detail-head").getBoundingClientRect().height,
+        detailBlockChrome: cssPixels(detailStyle.paddingTop) + cssPixels(detailStyle.paddingBottom),
+        detailRowGap: cssPixels(detailStyle.rowGap),
+        previewHandleHeight: previewHandle.getBoundingClientRect().height,
+        previewChrome,
         previewViewport: {
-            width: Math.max(120, preview.clientWidth - padding),
-            height: Math.max(120, preview.clientHeight - padding),
+            width: Math.max(120, Math.round(imageViewportRect.width)),
+            height: Math.max(120, Math.round(imageViewportRect.height)),
         },
     };
+}
+function cssPixels(value) {
+    const parsed = Number.parseFloat(value);
+    if (Number.isFinite(parsed))
+        return parsed;
+    return 0;
 }
 function currentFiltersWidth() {
     return Math.round(optionValueOr(model.layout.filtersWidth, qs("#filtersPanel").getBoundingClientRect().width));

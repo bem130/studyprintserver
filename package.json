@@ -1,6 +1,8 @@
 {
   "name": "studyprintserver",
   "private": true,
+  "author": "Bem130",
+  "license": "MIT",
   "type": "module",
   "scripts": {
     "build:frontend": "tsc -p tsconfig.json",

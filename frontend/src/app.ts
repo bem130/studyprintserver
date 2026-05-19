@@ -33,6 +33,7 @@ import {
   initModel,
   metricValues,
   needsCanvasProcessing,
+  resultRowHighlights,
   selectedItem,
   searchIssueText,
   searchScopeFromValue,
@@ -47,6 +48,7 @@ import {
   type Model,
   type Msg,
   type ResizeTarget,
+  type SearchHighlightSegment,
   type SearchMode,
   type SearchScope,
   type StudyPrintItem,
@@ -604,6 +606,18 @@ function resultRowSelected(current: Model, item: StudyPrintItem): boolean {
 }
 
 function viewResultRow(current: Model, item: StudyPrintItem, send: Dispatch): VNode {
+  const highlights = resultRowHighlights(current.advancedSearch, item);
+  const supplementChildren: VNode[] = [];
+  if (isSome(highlights.supplement)) {
+    supplementChildren.push(
+      h(
+        "div",
+        { class: "row-match" },
+        h("span", { class: "row-match-label" }, `${highlights.supplement.value.label}: `),
+        ...viewHighlightSegments(highlights.supplement.value.segments),
+      ),
+    );
+  }
   return h(
     "button",
     {
@@ -613,10 +627,20 @@ function viewResultRow(current: Model, item: StudyPrintItem, send: Dispatch): VN
       style: resultRowStyle(resultRowSelected(current, item)),
       onClick: () => send({ type: "SelectItem", id: some(item.global_content_id) }),
     },
-    h("div", { class: "row-title" }, item.title),
-    h("div", { class: "row-meta" }, `${item.logical_date} / ${item.primary_field_path}`),
-    h("div", { class: "row-text" }, item.text.slice(0, 160)),
+    h("div", { class: "row-title" }, ...viewHighlightSegments(highlights.title)),
+    h("div", { class: "row-meta" }, ...viewHighlightSegments(highlights.meta)),
+    h("div", { class: "row-text" }, ...viewHighlightSegments(highlights.text)),
+    supplementChildren,
   );
+}
+
+function viewHighlightSegments(segments: SearchHighlightSegment[]): Array<VNode | string> {
+  return segments.map((segment, index) => {
+    if (segment.highlighted) {
+      return h("mark", { key: `hit-${index}`, class: "search-hit" }, segment.text);
+    }
+    return segment.text;
+  });
 }
 
 function viewDetail(current: Model, send: Dispatch): VNode {
@@ -644,7 +668,6 @@ function viewDetail(current: Model, send: Dispatch): VNode {
             : "",
         ),
       ),
-      viewDetailTools(current, send),
     ),
     viewPreview(current, item, send),
     resizeHandle("previewResize", "Resize preview", "horizontal", (event) =>
@@ -657,7 +680,12 @@ function viewDetail(current: Model, send: Dispatch): VNode {
 function viewDetailInfo(current: Model, item: Option<StudyPrintItem>, send: Dispatch): VNode {
   return h(
     "section",
-    { id: "detailInfo", class: "detail-info", "aria-label": "body and xml" },
+    {
+      id: "detailInfo",
+      class: "detail-info",
+      "aria-label": "body and xml",
+      style: detailInfoStyle(current),
+    },
     viewDetailTabs(current, send),
     viewDetailTabPanel(current, item, send),
   );
@@ -902,80 +930,137 @@ function nodeText(node: Node): string {
   return optionValueOr(nullableOption(node.nodeValue), "");
 }
 
-function viewDetailTools(current: Model, send: Dispatch): VNode {
+function viewPreviewTools(current: Model, send: Dispatch): VNode {
   const previewFullscreen = fullscreenActive(current, FULLSCREEN_TARGETS.PREVIEW);
+  const panelOpen = previewToolsPanelOpen(current);
   return h(
     "div",
-    { class: "detail-tools", "aria-label": "image tools" },
+    {
+      id: "previewTools",
+      class: "preview-tools",
+      "aria-label": "image tools",
+      style: previewToolsStyle(current),
+      onPointerEnter: () => send({ type: "FullscreenToolsPointerEntered" }),
+      onPointerLeave: () => send({ type: "FullscreenToolsPointerLeft" }),
+    },
     h(
-      "div",
-      { class: "tool-row" },
-      toolButton("L", {
-        ...toolButtonBase(),
-        title: some("Rotate left"),
-        onClick: some(() => send({ type: "RotateBy", degrees: -90 })),
-      }),
-      toolButton("R", {
-        ...toolButtonBase(),
-        title: some("Rotate right"),
-        onClick: some(() => send({ type: "RotateBy", degrees: 90 })),
-      }),
-      toolButton("-", {
-        ...toolButtonBase(),
-        title: some("Zoom out"),
-        disabled: current.zoom <= MIN_ZOOM,
-        onClick: some(() => send({ type: "ZoomBy", delta: -ZOOM_STEP })),
-      }),
-      toolButton("+", {
-        ...toolButtonBase(),
-        title: some("Zoom in"),
-        disabled: current.zoom >= MAX_ZOOM,
-        onClick: some(() => send({ type: "ZoomBy", delta: ZOOM_STEP })),
-      }),
-      toolButton("Reset", {
-        ...toolButtonBase(),
-        id: some("resetView"),
-        wide: true,
-        onClick: some(() => send({ type: "ResetView" })),
-      }),
-      toolButton(toneLabel(current), {
-        ...toolButtonBase(),
-        id: some("toneModeToggle"),
-        wide: true,
-        active: toneOptions(current.tone, current.theme).inverted,
-        onClick: some(() => send({ type: "CycleTone" })),
-      }),
-      toolButton(previewFullscreen ? "Exit" : "Full", {
-        ...toolButtonBase(),
-        id: some("fullscreenButton"),
-        wide: true,
-        active: previewFullscreen,
-        onClick: some(() => send({ type: "RequestFullscreenToggle", target: FULLSCREEN_TARGETS.PREVIEW })),
-      }),
-      viewOpenImageLink(current),
+      "button",
+      {
+        id: "previewToolsTab",
+        class: "preview-tools-tab",
+        style: previewToolsTabStyle(panelOpen),
+        type: "button",
+        title: "Show or hide image tools",
+        onClick: () => send({ type: "ToggleFullscreenTools" }),
+      },
+      "Tools",
     ),
     h(
       "div",
-      { class: "tool-row" },
-      fitButton("Width", FIT_MODES.WIDTH, current, send),
-      fitButton("Height", FIT_MODES.HEIGHT, current, send),
-      fitButton("Page", FIT_MODES.BOTH, current, send),
-      toolButton("Norm", {
-        ...toolButtonBase(),
-        id: some("normalizeToggle"),
-        wide: true,
-        active: current.tone.autoNormalize,
-        onClick: some(() => send({ type: "ToggleNormalize" })),
-      }),
-      toolButton("Tone 0", {
-        ...toolButtonBase(),
-        id: some("resetToneAdjust"),
-        wide: true,
-        active: toneAdjustmentsActive(current),
-        onClick: some(() => send({ type: "ResetToneAdjustments" })),
-      }),
+      {
+        class: "preview-tools-panel",
+        "aria-label": "image tools panel",
+        style: previewToolsPanelStyle(panelOpen),
+      },
+      h(
+        "div",
+        { class: "preview-tools-panel-head" },
+        h("span", {}, "Image"),
+        toolButton("Pin", {
+          ...toolButtonBase(),
+          id: some("previewToolsPin"),
+          wide: true,
+          active: current.fullscreenTools === FULLSCREEN_TOOLS.PINNED,
+          onClick: some(() => send({ type: "ToggleFullscreenToolsPin" })),
+        }),
+        toolButton("Hide", {
+          ...toolButtonBase(),
+          wide: true,
+          onClick: some(() => send({ type: "HideFullscreenTools" })),
+        }),
+      ),
+      h(
+        "div",
+        { class: "tool-row" },
+        toolButton("L", {
+          ...toolButtonBase(),
+          title: some("Rotate left"),
+          onClick: some(() => send({ type: "RotateBy", degrees: -90 })),
+        }),
+        toolButton("R", {
+          ...toolButtonBase(),
+          title: some("Rotate right"),
+          onClick: some(() => send({ type: "RotateBy", degrees: 90 })),
+        }),
+        toolButton("-", {
+          ...toolButtonBase(),
+          title: some("Zoom out"),
+          disabled: current.zoom <= MIN_ZOOM,
+          onClick: some(() => send({ type: "ZoomBy", delta: -ZOOM_STEP })),
+        }),
+        toolButton("+", {
+          ...toolButtonBase(),
+          title: some("Zoom in"),
+          disabled: current.zoom >= MAX_ZOOM,
+          onClick: some(() => send({ type: "ZoomBy", delta: ZOOM_STEP })),
+        }),
+        toolButton("Reset", {
+          ...toolButtonBase(),
+          id: some("resetView"),
+          wide: true,
+          onClick: some(() => send({ type: "ResetView" })),
+        }),
+      ),
+      h(
+        "div",
+        { class: "tool-row" },
+        fitButton("Width", FIT_MODES.WIDTH, current, send),
+        fitButton("Height", FIT_MODES.HEIGHT, current, send),
+        fitButton("Page", FIT_MODES.BOTH, current, send),
+        toolButton("Norm", {
+          ...toolButtonBase(),
+          id: some("normalizeToggle"),
+          wide: true,
+          active: current.tone.autoNormalize,
+          onClick: some(() => send({ type: "ToggleNormalize" })),
+        }),
+        toolButton("Tone 0", {
+          ...toolButtonBase(),
+          id: some("resetToneAdjust"),
+          wide: true,
+          active: toneAdjustmentsActive(current),
+          onClick: some(() => send({ type: "ResetToneAdjustments" })),
+        }),
+      ),
+      h(
+        "div",
+        { class: "tool-row" },
+        toolButton(themeLabel(current), {
+          ...toolButtonBase(),
+          id: some("previewThemeToggle"),
+          wide: true,
+          active: current.theme === THEMES.DARK,
+          title: some("Toggle theme"),
+          onClick: some(() => send({ type: "ToggleTheme" })),
+        }),
+        toolButton(toneLabel(current), {
+          ...toolButtonBase(),
+          id: some("toneModeToggle"),
+          wide: true,
+          active: toneOptions(current.tone, current.theme).inverted,
+          onClick: some(() => send({ type: "CycleTone" })),
+        }),
+        toolButton(previewFullscreen ? "Exit" : "Full", {
+          ...toolButtonBase(),
+          id: some("fullscreenButton"),
+          wide: true,
+          active: previewFullscreen,
+          onClick: some(() => send({ type: "RequestFullscreenToggle", target: FULLSCREEN_TARGETS.PREVIEW })),
+        }),
+        viewOpenImageLink(current),
+      ),
+      viewAdjustRow(current, send, true),
     ),
-    viewAdjustRow(current, send, false),
   );
 }
 
@@ -1013,154 +1098,50 @@ function viewPreview(current: Model, item: Option<StudyPrintItem>, send: Dispatc
     {
       id: "previewPane",
       class: "preview",
-      style: previewStyle(current, imageLayout),
+      style: previewStyle(current),
       "aria-label": "image preview",
     },
     h(
       "div",
       {
-        id: "imageStage",
-        class: "image-stage",
-        style: imageStageStyle(current, imageLayout),
+        id: "imageViewport",
+        class: "image-viewport",
+        style: imageViewportStyle(imageLayout),
       },
-      h("img", {
-        id: "detailImage",
-        alt: isSome(item) ? item.value.title : "",
-        ...imageSourceProp(item),
-        style: sourceMediaStyle(mediaBase, canvasVisible),
-        onLoad: (event: Event) => {
-          const image = event.currentTarget as HTMLImageElement;
-          send({
-            type: "ImageLoaded",
-            size: { width: image.naturalWidth, height: image.naturalHeight },
-          });
+      h(
+        "div",
+        {
+          id: "imageStage",
+          class: "image-stage",
+          style: imageStageStyle(current, imageLayout),
         },
-      }),
-      h("canvas", {
-        id: "darkImageCanvas",
-        "aria-hidden": "true",
-        style: canvasMediaStyle(mediaBase, canvasVisible),
-      }),
+        h("img", {
+          id: "detailImage",
+          alt: isSome(item) ? item.value.title : "",
+          ...imageSourceProp(item),
+          style: sourceMediaStyle(mediaBase, canvasVisible),
+          onLoad: (event: Event) => {
+            const image = event.currentTarget as HTMLImageElement;
+            send({
+              type: "ImageLoaded",
+              size: { width: image.naturalWidth, height: image.naturalHeight },
+            });
+          },
+        }),
+        h("canvas", {
+          id: "darkImageCanvas",
+          "aria-hidden": "true",
+          style: canvasMediaStyle(mediaBase, canvasVisible),
+        }),
+      ),
     ),
-    fullscreenToolsNodes(current, send),
+    previewToolsNodes(item, current, send),
   );
 }
 
-function fullscreenToolsNodes(current: Model, send: Dispatch): VNode[] {
-  if (!fullscreenActive(current, FULLSCREEN_TARGETS.PREVIEW)) return [];
-  return [viewFullscreenTools(current, send)];
-}
-
-function viewFullscreenTools(current: Model, send: Dispatch): VNode {
-  const panelOpen = fullscreenPanelOpen(current);
-  return h(
-    "div",
-    {
-      id: "fullscreenTools",
-      class: "fullscreen-tools",
-      style: fullscreenToolsStyle(),
-      onPointerEnter: () => send({ type: "FullscreenToolsPointerEntered" }),
-      onPointerLeave: () => send({ type: "FullscreenToolsPointerLeft" }),
-    },
-    h(
-      "button",
-      {
-        id: "fullscreenToolbarTab",
-        class: "fullscreen-tab",
-        style: fullscreenTabStyle(panelOpen),
-        type: "button",
-        title: "Show or hide fullscreen tools",
-        onClick: () => send({ type: "ToggleFullscreenTools" }),
-      },
-      "Tools",
-    ),
-    h(
-      "div",
-      {
-        class: "fullscreen-panel",
-        "aria-label": "fullscreen tools",
-        style: fullscreenPanelStyle(panelOpen),
-      },
-      h(
-        "div",
-        { class: "fullscreen-panel-head" },
-        h("span", {}, "Tools"),
-        toolButton("Pin", {
-          ...toolButtonBase(),
-          id: some("fullscreenPin"),
-          wide: true,
-          active: current.fullscreenTools === FULLSCREEN_TOOLS.PINNED,
-          onClick: some(() => send({ type: "ToggleFullscreenToolsPin" })),
-        }),
-        toolButton("Hide", {
-          ...toolButtonBase(),
-          wide: true,
-          onClick: some(() => send({ type: "HideFullscreenTools" })),
-        }),
-      ),
-      h(
-        "div",
-        { class: "tool-row" },
-        toolButton("L", {
-          ...toolButtonBase(),
-          onClick: some(() => send({ type: "RotateBy", degrees: -90 })),
-        }),
-        toolButton("R", {
-          ...toolButtonBase(),
-          onClick: some(() => send({ type: "RotateBy", degrees: 90 })),
-        }),
-        toolButton("-", {
-          ...toolButtonBase(),
-          onClick: some(() => send({ type: "ZoomBy", delta: -ZOOM_STEP })),
-        }),
-        toolButton("+", {
-          ...toolButtonBase(),
-          onClick: some(() => send({ type: "ZoomBy", delta: ZOOM_STEP })),
-        }),
-        toolButton("Reset", {
-          ...toolButtonBase(),
-          wide: true,
-          onClick: some(() => send({ type: "ResetView" })),
-        }),
-      ),
-      h(
-        "div",
-        { class: "tool-row" },
-        fitButton("Width", FIT_MODES.WIDTH, current, send),
-        fitButton("Height", FIT_MODES.HEIGHT, current, send),
-        fitButton("Page", FIT_MODES.BOTH, current, send),
-      ),
-      h(
-        "div",
-        { class: "tool-row" },
-        toolButton(themeLabel(current), {
-          ...toolButtonBase(),
-          wide: true,
-          active: current.theme === THEMES.DARK,
-          onClick: some(() => send({ type: "ToggleTheme" })),
-        }),
-        toolButton(toneLabel(current), {
-          ...toolButtonBase(),
-          wide: true,
-          active: toneOptions(current.tone, current.theme).inverted,
-          onClick: some(() => send({ type: "CycleTone" })),
-        }),
-        toolButton("Norm", {
-          ...toolButtonBase(),
-          wide: true,
-          active: current.tone.autoNormalize,
-          onClick: some(() => send({ type: "ToggleNormalize" })),
-        }),
-        toolButton("Exit", {
-          ...toolButtonBase(),
-          wide: true,
-          active: fullscreenActive(current, FULLSCREEN_TARGETS.PREVIEW),
-          onClick: some(() => send({ type: "RequestFullscreenToggle", target: FULLSCREEN_TARGETS.PREVIEW })),
-        }),
-      ),
-      viewAdjustRow(current, send, true),
-    ),
-  );
+function previewToolsNodes(item: Option<StudyPrintItem>, current: Model, send: Dispatch): VNode[] {
+  if (!isSome(item)) return [];
+  return [viewPreviewTools(current, send)];
 }
 
 function viewAdjustRow(current: Model, send: Dispatch, fullscreen: boolean): VNode {
@@ -1329,6 +1310,14 @@ function imageStageStyle(current: Model, layout: Option<MediaLayout>): Record<st
   };
 }
 
+function imageViewportStyle(layout: Option<MediaLayout>): Record<string, string> {
+  if (!isSome(layout)) return {};
+  return {
+    justifyContent: layout.value.overflowX ? "flex-start" : "center",
+    alignItems: layout.value.overflowY ? "flex-start" : "center",
+  };
+}
+
 function mediaStyle(layout: Option<MediaLayout>): Record<string, string> {
   return isSome(layout)
     ? { width: `${layout.value.mediaWidth}px`, height: `${layout.value.mediaHeight}px` }
@@ -1381,21 +1370,27 @@ function toolButtonStyle(active: boolean, disabled: boolean): Record<string, str
   return style;
 }
 
-function previewStyle(current: Model, layout: Option<MediaLayout>): Record<string, string> {
+function previewStyle(current: Model): Record<string, string> {
   const style: Record<string, string> = {};
-  if (isSome(layout)) {
-    style.justifyContent = layout.value.overflowX ? "flex-start" : "center";
-    style.alignItems = layout.value.overflowY ? "flex-start" : "center";
-  }
   if (fullscreenActive(current, FULLSCREEN_TARGETS.PREVIEW)) {
     style.width = "100vw";
     style.height = "100vh";
     style.border = "0";
     style.borderRadius = "0";
-    style.padding = "20px";
     style.background = "var(--viewer-bg)";
   }
   return style;
+}
+
+function detailInfoStyle(current: Model): Record<string, string> {
+  if (!fullscreenActive(current, FULLSCREEN_TARGETS.BODY)) return {};
+  return {
+    width: "100vw",
+    height: "100vh",
+    padding: "16px",
+    background: "var(--panel)",
+    overflow: "hidden",
+  };
 }
 
 function sourceMediaStyle(base: Record<string, string>, processedVisible: boolean): Record<string, string> {
@@ -1412,24 +1407,25 @@ function canvasMediaStyle(base: Record<string, string>, processedVisible: boolea
   };
 }
 
-function fullscreenPanelOpen(current: Model): boolean {
+function previewToolsPanelOpen(current: Model): boolean {
   return (
     current.fullscreenTools === FULLSCREEN_TOOLS.HOVER_OPEN ||
     current.fullscreenTools === FULLSCREEN_TOOLS.PINNED
   );
 }
 
-function fullscreenToolsStyle(): Record<string, string> {
-  return {
+function previewToolsStyle(current: Model): Record<string, string> {
+  const style: Record<string, string> = {
     display: "block",
-    position: "fixed",
-    top: "16px",
-    right: "16px",
+    position: fullscreenActive(current, FULLSCREEN_TARGETS.PREVIEW) ? "fixed" : "absolute",
+    top: fullscreenActive(current, FULLSCREEN_TARGETS.PREVIEW) ? "16px" : "10px",
+    right: fullscreenActive(current, FULLSCREEN_TARGETS.PREVIEW) ? "16px" : "10px",
     zIndex: "20",
   };
+  return style;
 }
 
-function fullscreenTabStyle(open: boolean): Record<string, string> {
+function previewToolsTabStyle(open: boolean): Record<string, string> {
   return open
     ? {
         borderColor: "var(--accent)",
@@ -1439,7 +1435,7 @@ function fullscreenTabStyle(open: boolean): Record<string, string> {
     : {};
 }
 
-function fullscreenPanelStyle(open: boolean): Record<string, string> {
+function previewToolsPanelStyle(open: boolean): Record<string, string> {
   return open
     ? {
         opacity: "1",
@@ -1491,17 +1487,36 @@ function beginResize(event: PointerEvent, target: ResizeTarget): void {
 }
 
 function readLayoutMetrics(): LayoutMetrics {
+  const detail = qs<HTMLElement>("#detailPanel");
   const preview = qs<HTMLElement>("#previewPane");
-  const padding = document.fullscreenElement === preview ? 40 : 24;
+  const imageViewport = qs<HTMLElement>("#imageViewport");
+  const previewHandle = qs<HTMLElement>("#previewResize");
+  const detailStyle = getComputedStyle(detail);
+  const previewRect = preview.getBoundingClientRect();
+  const imageViewportRect = imageViewport.getBoundingClientRect();
+  const previewChrome = {
+    width: Math.max(0, Math.round(previewRect.width - imageViewportRect.width)),
+    height: Math.max(0, Math.round(previewRect.height - imageViewportRect.height)),
+  };
   return {
     workspaceWidth: qs<HTMLElement>("#workspace").clientWidth,
-    detailHeight: qs<HTMLElement>("#detailPanel").clientHeight,
+    detailHeight: detail.getBoundingClientRect().height,
     detailHeadHeight: qs<HTMLElement>(".detail-head").getBoundingClientRect().height,
+    detailBlockChrome: cssPixels(detailStyle.paddingTop) + cssPixels(detailStyle.paddingBottom),
+    detailRowGap: cssPixels(detailStyle.rowGap),
+    previewHandleHeight: previewHandle.getBoundingClientRect().height,
+    previewChrome,
     previewViewport: {
-      width: Math.max(120, preview.clientWidth - padding),
-      height: Math.max(120, preview.clientHeight - padding),
+      width: Math.max(120, Math.round(imageViewportRect.width)),
+      height: Math.max(120, Math.round(imageViewportRect.height)),
     },
   };
+}
+
+function cssPixels(value: string): number {
+  const parsed = Number.parseFloat(value);
+  if (Number.isFinite(parsed)) return parsed;
+  return 0;
 }
 
 function currentFiltersWidth(): number {

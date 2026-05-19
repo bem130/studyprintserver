@@ -8,6 +8,7 @@ import {
   FULLSCREEN_TOOLS,
   initModel,
   needsCanvasProcessing,
+  resultRowHighlights,
   SEARCH_MODES,
   SEARCH_SCOPES,
   selectedItem,
@@ -293,6 +294,49 @@ test("browse filters and advanced search combine by intersection", () => {
   );
 });
 
+test("plain search highlights visible result row matches without storing highlight state", () => {
+  const [loaded] = update(initModel()[0], { type: "ContentsLoaded", items });
+  const [bodyScope] = update(loaded, { type: "AdvancedSearchScopeChanged", scope: SEARCH_SCOPES.BODY });
+  const [searched] = update(bodyScope, { type: "AdvancedSearchQueryChanged", value: "微分" });
+  const first = filteredItems(searched)[0];
+  const highlights = resultRowHighlights(searched.advancedSearch, first);
+
+  assert.equal(highlightedText(highlights.title), "");
+  assert.equal(highlightedText(highlights.text), "微分");
+  assert.equal(isSome(highlights.supplement), false);
+});
+
+test("plain search highlights compact XML body matches across element boundaries", () => {
+  const xmlSplitItems = [
+    {
+      ...items[0],
+      text: "",
+      xml_text: "<print><body><p><t>微分</t><formula><altText>公式</altText></formula></p></body></print>",
+    },
+  ];
+  const [loaded] = update(initModel()[0], { type: "ContentsLoaded", items: xmlSplitItems });
+  const [bodyScope] = update(loaded, { type: "AdvancedSearchScopeChanged", scope: SEARCH_SCOPES.BODY });
+  const [searched] = update(bodyScope, { type: "AdvancedSearchQueryChanged", value: "微分公式" });
+  const first = filteredItems(searched)[0];
+  const highlights = resultRowHighlights(searched.advancedSearch, first);
+
+  assert.equal(highlightedText(highlights.text).replace(/\s+/gu, ""), "微分公式");
+});
+
+test("plain search exposes a highlighted supplemental row for hidden tag matches", () => {
+  const [loaded] = update(initModel()[0], { type: "ContentsLoaded", items: hierarchyItems });
+  const [tagScope] = update(loaded, { type: "AdvancedSearchScopeChanged", scope: SEARCH_SCOPES.TAGS });
+  const [searched] = update(tagScope, { type: "AdvancedSearchQueryChanged", value: "確率" });
+  const first = filteredItems(searched)[0];
+  const highlights = resultRowHighlights(searched.advancedSearch, first);
+
+  assert.equal(isSome(highlights.supplement), true);
+  if (isSome(highlights.supplement)) {
+    assert.equal(highlights.supplement.value.label, "Tags");
+    assert.equal(highlightedText(highlights.supplement.value.segments), "確率");
+  }
+});
+
 test("tone adjustments request canvas processing without touching DOM", () => {
   const [initial] = initModel();
   const [loaded] = update(initial, { type: "ContentsLoaded", items });
@@ -373,6 +417,67 @@ test("viewer controls are represented by typed messages", () => {
   assert.deepEqual(cmds, []);
 });
 
+test("preview resize derives viewport from the requested split height and measured CSS chrome", () => {
+  const metrics = layoutMetrics({
+    detailHeight: 900,
+    detailHeadHeight: 96,
+    detailBlockChrome: 24,
+    detailRowGap: 8,
+    previewHandleHeight: 7,
+    previewChrome: { width: 26, height: 26 },
+    previewViewport: { width: 640, height: 420 },
+  });
+  const [initial] = initModel();
+  const [resized, cmds] = update(initial, {
+    type: "ResizePanel",
+    target: "preview",
+    value: 520,
+    metrics,
+  });
+
+  assert.equal(isSome(resized.layout.previewHeight), true);
+  assert.equal(isSome(resized.layout.previewViewport), true);
+  if (isSome(resized.layout.previewHeight)) assert.equal(resized.layout.previewHeight.value, 520);
+  if (isSome(resized.layout.previewViewport)) {
+    assert.deepEqual(resized.layout.previewViewport.value, { width: 640, height: 494 });
+  }
+  assert.deepEqual(cmds, [{ type: "MeasureLayout" }]);
+});
+
+test("preview resize clamps against measured detail grid padding gaps and handle height", () => {
+  const metrics = layoutMetrics({
+    detailHeight: 900,
+    detailHeadHeight: 96,
+    detailBlockChrome: 24,
+    detailRowGap: 8,
+    previewHandleHeight: 7,
+    previewChrome: { width: 26, height: 26 },
+    previewViewport: { width: 640, height: 420 },
+  });
+  const [initial] = initModel();
+  const [tooLarge] = update(initial, {
+    type: "ResizePanel",
+    target: "preview",
+    value: 800,
+    metrics,
+  });
+  const [tooSmall] = update(initial, {
+    type: "ResizePanel",
+    target: "preview",
+    value: 100,
+    metrics,
+  });
+
+  if (isSome(tooLarge.layout.previewHeight)) assert.equal(tooLarge.layout.previewHeight.value, 559);
+  if (isSome(tooLarge.layout.previewViewport)) {
+    assert.deepEqual(tooLarge.layout.previewViewport.value, { width: 640, height: 533 });
+  }
+  if (isSome(tooSmall.layout.previewHeight)) assert.equal(tooSmall.layout.previewHeight.value, 220);
+  if (isSome(tooSmall.layout.previewViewport)) {
+    assert.deepEqual(tooSmall.layout.previewViewport.value, { width: 640, height: 194 });
+  }
+});
+
 test("detail data tabs and xml expansion are modeled in TypeScript state", () => {
   const [initial] = initModel();
   const [treeTab] = update(initial, { type: "SetDetailTab", tab: DETAIL_TABS.XML_TREE });
@@ -421,3 +526,24 @@ test("fullscreen target is explicit and body fullscreen does not open image tool
   });
   assert.deepEqual(cmds, [{ type: "ToggleFullscreen", target: FULLSCREEN_TARGETS.BODY }]);
 });
+
+function highlightedText(segments) {
+  return segments
+    .filter((segment) => segment.highlighted)
+    .map((segment) => segment.text)
+    .join("");
+}
+
+function layoutMetrics(overrides = {}) {
+  return {
+    workspaceWidth: 1200,
+    detailHeight: 820,
+    detailHeadHeight: 90,
+    detailBlockChrome: 24,
+    detailRowGap: 8,
+    previewHandleHeight: 7,
+    previewChrome: { width: 26, height: 26 },
+    previewViewport: { width: 620, height: 360 },
+    ...overrides,
+  };
+}
