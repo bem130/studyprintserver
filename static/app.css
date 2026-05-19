@@ -809,7 +809,8 @@ input[type="range"] {
   min-height: 22px;
 }
 
-.xml-line {
+.xml-line,
+.xml-text {
   display: flex;
   align-items: baseline;
 }
@@ -866,6 +867,10 @@ input[type="range"] {
 .xml-text {
   color: var(--ink);
   white-space: pre-wrap;
+}
+
+.xml-text-content {
+  min-width: 0;
 }
 
 .xml-comment,

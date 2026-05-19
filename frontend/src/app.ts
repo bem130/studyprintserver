@@ -669,15 +669,24 @@ function viewXmlNode(node: Node, path: string, collapsedPaths: string[], send: D
     return viewXmlElement(node as Element, path, collapsedPaths, send);
   }
   if (node.nodeType === Node.COMMENT_NODE) {
-    return h("div", { key: path, class: "xml-text xml-comment" }, "<!--", nodeText(node).trim(), "-->");
+    return viewXmlText(path, ["<!--", nodeText(node).trim(), "-->"], "xml-comment");
   }
   if (node.nodeType === Node.CDATA_SECTION_NODE) {
-    return h("div", { key: path, class: "xml-text" }, "<![CDATA[", nodeText(node), "]]>");
+    return viewXmlText(path, ["<![CDATA[", nodeText(node), "]]>"], "");
   }
   if (node.nodeType === Node.PROCESSING_INSTRUCTION_NODE) {
-    return h("div", { key: path, class: "xml-text" }, "<?", node.nodeName, " ", nodeText(node), "?>");
+    return viewXmlText(path, ["<?", node.nodeName, " ", nodeText(node), "?>"], "");
   }
-  return h("div", { key: path, class: "xml-text" }, nodeText(node).trim());
+  return viewXmlText(path, [nodeText(node).trim()], "");
+}
+
+function viewXmlText(path: string, text: Array<string>, extraClass: string): VNode {
+  return h(
+    "div",
+    { key: path, class: extraClass.length > 0 ? `xml-text ${extraClass}` : "xml-text" },
+    h("span", { class: "xml-toggle-spacer" }, ""),
+    h("span", { class: "xml-text-content" }, text),
+  );
 }
 
 function viewXmlElement(
