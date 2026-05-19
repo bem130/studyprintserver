@@ -208,7 +208,7 @@ function runCmd(cmd) {
 }
 async function loadContents() {
     try {
-        const response = await fetch("/api/contents");
+        const response = await fetch("/api/contents", { cache: "no-store" });
         if (!response.ok) {
             throw new Error(`failed to load contents: ${response.status}`);
         }

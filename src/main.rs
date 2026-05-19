@@ -2,7 +2,7 @@
 
 use anyhow::{Context, Result};
 use axum::extract::{Path as AxumPath, State};
-use axum::http::header::CONTENT_TYPE;
+use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE};
 use axum::http::{HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
@@ -23,9 +23,15 @@ const DEFAULT_BIND: &str = "127.0.0.1:7878";
 
 #[derive(Clone)]
 struct AppState {
-    data: Arc<AppData>,
+    index_dir: Arc<PathBuf>,
     library_dir: Arc<PathBuf>,
     static_dir: Arc<PathBuf>,
+}
+
+impl AppState {
+    fn current_data(&self) -> Result<AppData> {
+        load_data(&self.index_dir, &self.library_dir)
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -97,10 +103,8 @@ async fn main() -> Result<()> {
         .parse()
         .with_context(|| format!("invalid STUDYPRINT_BIND value: {bind}"))?;
 
-    let data =
-        Arc::new(load_data(&index_dir, &library_dir).context("failed to load StudyPrint index")?);
     let state = AppState {
-        data,
+        index_dir: Arc::new(index_dir),
         library_dir: Arc::new(library_dir),
         static_dir: Arc::new(static_dir),
     };
@@ -140,16 +144,30 @@ async fn static_asset(
     static_file_response(&state.static_dir, &path, kind).await
 }
 
-async fn api_health(State(state): State<AppState>) -> Json<Health> {
-    Json(Health {
-        ok: true,
-        prints: state.data.print_count,
-        contents: state.data.items.len(),
-    })
+async fn api_health(State(state): State<AppState>) -> Response {
+    match state.current_data() {
+        Ok(data) => no_store_json(Health {
+            ok: true,
+            prints: data.print_count,
+            contents: data.items.len(),
+        }),
+        Err(error) => {
+            eprintln!("failed to load latest StudyPrint index for health: {error:#}");
+            no_store_json_with_status(
+                StatusCode::SERVICE_UNAVAILABLE,
+                Health {
+                    ok: false,
+                    prints: 0,
+                    contents: 0,
+                },
+            )
+        }
+    }
 }
 
-async fn api_contents(State(state): State<AppState>) -> Json<Vec<StudyPrintItem>> {
-    Json(state.data.items.clone())
+async fn api_contents(State(state): State<AppState>) -> Result<Response, ApiDataError> {
+    let data = state.current_data().map_err(ApiDataError)?;
+    Ok(no_store_json(data.items))
 }
 
 async fn library_file(
@@ -169,7 +187,38 @@ async fn library_file(
     response
         .headers_mut()
         .insert(CONTENT_TYPE, HeaderValue::from_static(kind.content_type()));
-    Ok(response)
+    Ok(with_no_store(response))
+}
+
+#[derive(Debug)]
+struct ApiDataError(anyhow::Error);
+
+impl IntoResponse for ApiDataError {
+    fn into_response(self) -> Response {
+        eprintln!("failed to load latest StudyPrint index: {:#}", self.0);
+        let response = (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "failed to load latest StudyPrint index\n",
+        )
+            .into_response();
+        with_no_store(response)
+    }
+}
+
+fn no_store_json<T: Serialize>(value: T) -> Response {
+    with_no_store(Json(value).into_response())
+}
+
+fn no_store_json_with_status<T: Serialize>(status: StatusCode, value: T) -> Response {
+    with_no_store((status, Json(value)).into_response())
+}
+
+fn with_no_store(mut response: Response) -> Response {
+    response.headers_mut().insert(
+        CACHE_CONTROL,
+        HeaderValue::from_static("no-store, max-age=0"),
+    );
+    response
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -275,7 +324,7 @@ async fn static_file_response(
     response
         .headers_mut()
         .insert(CONTENT_TYPE, HeaderValue::from_static(kind.content_type()));
-    Ok(response)
+    Ok(with_no_store(response))
 }
 
 fn validate_static_file_path(path: &str) -> Result<(), StaticFileError> {
@@ -556,6 +605,49 @@ mod tests {
     }
 
     #[test]
+    fn api_json_responses_disable_browser_cache() {
+        let response = no_store_json(Health {
+            ok: true,
+            prints: 1,
+            contents: 2,
+        });
+
+        assert_eq!(
+            response
+                .headers()
+                .get(CACHE_CONTROL)
+                .and_then(|value| value.to_str().ok()),
+            Some("no-store, max-age=0")
+        );
+    }
+
+    #[test]
+    fn app_state_reads_latest_index_without_server_restart() -> Result<()> {
+        let root = unique_test_dir("reload-index");
+        let index_dir = root.join("index");
+        let library_dir = root.join("library");
+        write_test_index(&index_dir, &library_dir, "First title", "first body")?;
+        let state = AppState {
+            index_dir: Arc::new(index_dir.clone()),
+            library_dir: Arc::new(library_dir.clone()),
+            static_dir: Arc::new(root.join("static")),
+        };
+
+        let first = state.current_data()?;
+        assert_eq!(first.items[0].title, "First title");
+        assert_eq!(first.items[0].text, "first body");
+
+        write_test_index(&index_dir, &library_dir, "Second title", "second body")?;
+        let second = state.current_data()?;
+
+        assert_eq!(second.items[0].title, "Second title");
+        assert_eq!(second.items[0].text, "second body");
+
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
     fn list_text_prefers_formula_alt_text_over_tex() {
         let xml = r#"
         <print xmlns="urn:slf:studyprint:0.5">
@@ -665,5 +757,70 @@ mod tests {
         }
         output.push('\n');
         Ok(())
+    }
+
+    fn unique_test_dir(label: &str) -> PathBuf {
+        let suffix = format!(
+            "{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock before UNIX_EPOCH")
+                .as_nanos()
+        );
+        std::env::temp_dir().join(format!("studyprintserver-{label}-{suffix}"))
+    }
+
+    fn write_test_index(
+        index_dir: &Path,
+        library_dir: &Path,
+        title: &str,
+        body: &str,
+    ) -> Result<()> {
+        fs::create_dir_all(index_dir)?;
+        let xml_rel = "2026/05/20/sample.xml";
+        let xml_path = library_dir.join(xml_rel.replace('/', std::path::MAIN_SEPARATOR_STR));
+        let xml_parent = xml_path
+            .parent()
+            .context("test XML path has no parent directory")?;
+        fs::create_dir_all(xml_parent)?;
+        fs::write(&xml_path, sample_xml(body))?;
+        fs::write(
+            index_dir.join("prints.jsonl"),
+            format!(
+                "{{\"image_path\":\"2026/05/20/sample.png\",\"print_id\":\"p001\",\"xml_path\":\"{xml_rel}\"}}\n"
+            ),
+        )?;
+        fs::write(
+            index_dir.join("contents.jsonl"),
+            format!(
+                "{{\"global_content_id\":\"p001:c1\",\"logical_date\":\"2026-05-20\",\"primary_field_path\":\"数学/テスト\",\"print_id\":\"p001\",\"tags\":[\"VLM OCR済み\"],\"title\":\"{title}\"}}\n"
+            ),
+        )?;
+        fs::write(
+            index_dir.join("body_variants.jsonl"),
+            "{\"global_content_id\":\"p001:c1\",\"preferred_for_index\":true,\"text\":\"fallback body\"}\n",
+        )?;
+        fs::write(index_dir.join("formulas.jsonl"), "")?;
+        Ok(())
+    }
+
+    fn sample_xml(body: &str) -> String {
+        format!(
+            r#"<print xmlns="urn:slf:studyprint:0.5">
+  <body>
+    <contents>
+      <content id="c1" ordinal="1">
+        <body_versions>
+          <body_original id="c1.bo1" source="vlm-image-reading">
+            <p><t>{body}</t></p>
+          </body_original>
+        </body_versions>
+      </content>
+    </contents>
+  </body>
+</print>
+"#
+        )
     }
 }

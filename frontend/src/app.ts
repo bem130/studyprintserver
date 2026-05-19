@@ -310,7 +310,7 @@ function runCmd(cmd: Cmd): void {
 
 async function loadContents(): Promise<void> {
   try {
-    const response = await fetch("/api/contents");
+    const response = await fetch("/api/contents", { cache: "no-store" });
     if (!response.ok) {
       throw new Error(`failed to load contents: ${response.status}`);
     }
