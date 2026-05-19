@@ -1,5 +1,5 @@
 import { FIT_MODES, THEMES, TONE_BRIGHTNESS_MAX, TONE_BRIGHTNESS_MIN, TONE_CONTRAST_MAX, TONE_CONTRAST_MIN, lightnessRangeFromHistogram, mediaLayout, sourceLightness, srgbToOklab, toneOptions, } from "./viewer-core.js";
-import { DETAIL_TABS, FULLSCREEN_TARGETS, FULLSCREEN_TOOLS, MAX_ZOOM, MIN_ZOOM, ZOOM_STEP, activeSourceSize, dateCounts, fieldCounts, filteredItems, initModel, metricValues, needsCanvasProcessing, selectedItem, tagCounts, toneAdjustmentsActive, toneLabel, update, } from "./ui-state.js";
+import { DETAIL_TABS, FULLSCREEN_TARGETS, FULLSCREEN_TOOLS, MAX_ZOOM, MIN_ZOOM, SEARCH_MODES, SEARCH_SCOPES, ZOOM_STEP, activeSourceSize, advancedSearchIssue, dateCounts, fieldCounts, filteredItems, initModel, metricValues, needsCanvasProcessing, selectedItem, searchIssueText, searchScopeFromValue, tagCounts, toneAdjustmentsActive, toneLabel, update, } from "./ui-state.js";
 import { isSome, none, optionValueOr, some } from "./option.js";
 import { h, mount, patch } from "./vdom.js";
 import { viewStudyPrintBody } from "./xml-body-view.js";
@@ -246,13 +246,7 @@ function viewFilters(current, send) {
     const fields = fieldCounts(current);
     const dates = dateCounts(current);
     const tags = tagCounts(current);
-    return h("aside", { id: "filtersPanel", class: "filters", "aria-label": "filters" }, h("label", { class: "filter-block" }, h("span", {}, "Search"), h("input", {
-        id: "searchInput",
-        type: "search",
-        autocomplete: "off",
-        value: current.search,
-        onInput: (event) => send({ type: "SearchChanged", value: event.currentTarget.value }),
-    })), selectFilter("fieldSelect", "Field", "All fields", current.field, fields, fieldOptionLabel(fields), (value) => send({ type: "FieldChanged", value: selectValueOption(value) })), selectFilter("dateSelect", "Date", "All dates", current.date, dates, plainOptionLabel, (value) => send({ type: "DateChanged", value: selectValueOption(value) })), h("div", { class: "filter-block" }, h("span", {}, "Tags"), h("div", { id: "tagList", class: "tag-list" }, ...[...tags.entries()]
+    return h("aside", { id: "filtersPanel", class: "filters", "aria-label": "filters" }, h("div", { class: "filter-section-title" }, "Browse"), selectFilter("fieldSelect", "Field", "All fields", current.field, fields, fieldOptionLabel(fields), (value) => send({ type: "FieldChanged", value: selectValueOption(value) })), selectFilter("dateSelect", "Date", "All dates", current.date, dates, plainOptionLabel, (value) => send({ type: "DateChanged", value: selectValueOption(value) })), h("div", { class: "filter-block" }, h("span", {}, "Tags"), h("div", { id: "tagList", class: "tag-list" }, ...[...tags.entries()]
         .sort(compareTagCounts)
         .map(([tag, count]) => h("button", {
         key: tag,
@@ -260,7 +254,51 @@ function viewFilters(current, send) {
         class: "tag-button",
         style: tagButtonStyle(optionStringEquals(current.tag, tag)),
         onClick: () => send({ type: "TagToggled", tag }),
-    }, `${tag} ${count}`)))));
+    }, `${tag} ${count}`)))), h("div", { class: "filter-section-title" }, "Advanced"), viewAdvancedSearch(current, send));
+}
+function viewAdvancedSearch(current, send) {
+    const issue = advancedSearchIssue(current);
+    return h("div", { class: "advanced-search" }, h("label", { class: "filter-block" }, h("span", {}, "Query"), h("input", {
+        id: "advancedSearchInput",
+        type: "search",
+        autocomplete: "off",
+        value: current.advancedSearch.query,
+        onInput: (event) => send({
+            type: "AdvancedSearchQueryChanged",
+            value: event.currentTarget.value,
+        }),
+    })), h("div", { class: "filter-block" }, h("span", {}, "Mode"), h("div", { class: "segmented" }, searchModeButton("Text", SEARCH_MODES.PLAIN, current.advancedSearch.mode, send), searchModeButton("Regex", SEARCH_MODES.REGEX, current.advancedSearch.mode, send), searchModeButton("Fuzzy", SEARCH_MODES.FUZZY, current.advancedSearch.mode, send))), h("label", { class: "filter-block" }, h("span", {}, "Target"), h("select", {
+        id: "advancedSearchScope",
+        value: current.advancedSearch.scope,
+        onChange: (event) => {
+            const scope = searchScopeFromValue(event.currentTarget.value);
+            if (isSome(scope))
+                send({ type: "AdvancedSearchScopeChanged", scope: scope.value });
+        },
+    }, searchScopeOption("All", SEARCH_SCOPES.ALL), searchScopeOption("Title", SEARCH_SCOPES.TITLE), searchScopeOption("Body", SEARCH_SCOPES.BODY), searchScopeOption("Meta", SEARCH_SCOPES.META), searchScopeOption("Tags", SEARCH_SCOPES.TAGS), searchScopeOption("Field", SEARCH_SCOPES.FIELD), searchScopeOption("Date", SEARCH_SCOPES.DATE), searchScopeOption("Filename", SEARCH_SCOPES.FILENAME))), h("label", { class: "filter-block" }, h("span", {}, "Case"), h("select", {
+        id: "advancedSearchCase",
+        value: current.advancedSearch.caseSensitive ? "sensitive" : "insensitive",
+        onChange: (event) => send({
+            type: "AdvancedSearchCaseSensitivityChanged",
+            caseSensitive: event.currentTarget.value === "sensitive",
+        }),
+    }, h("option", { value: "insensitive" }, "Ignore case"), h("option", { value: "sensitive" }, "Match case"))), toolButton("Reset search", {
+        ...toolButtonBase(),
+        id: some("advancedSearchReset"),
+        wide: true,
+        title: some("Clear advanced search"),
+        onClick: some(() => send({ type: "ResetAdvancedSearch" })),
+    }), isSome(issue) ? h("div", { class: "filter-error" }, searchIssueText(issue.value)) : h("div", { class: "filter-hint" }, ""));
+}
+function searchModeButton(label, mode, current, send) {
+    return h("button", {
+        type: "button",
+        class: current === mode ? "segmented-button segmented-button-active" : "segmented-button",
+        onClick: () => send({ type: "AdvancedSearchModeChanged", mode }),
+    }, label);
+}
+function searchScopeOption(label, scope) {
+    return h("option", { value: scope }, label);
 }
 function selectFilter(id, label, allLabel, value, counts, optionLabel, onChange) {
     return h("label", { class: "filter-block" }, h("span", {}, label), h("select", {

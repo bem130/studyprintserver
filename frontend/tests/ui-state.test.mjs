@@ -8,7 +8,10 @@ import {
   FULLSCREEN_TOOLS,
   initModel,
   needsCanvasProcessing,
+  SEARCH_MODES,
+  SEARCH_SCOPES,
   selectedItem,
+  advancedSearchIssue,
   update,
 } from "../../static/ui-state.js";
 import { isSome, some } from "../../static/option.js";
@@ -133,6 +136,159 @@ test("field filters match broad path prefixes and counts include ancestors", () 
   const [probabilityFiltered] = update(loaded, { type: "FieldChanged", value: some("数学/確率") });
   assert.deepEqual(
     filteredItems(probabilityFiltered).map((item) => item.global_content_id),
+    ["c"],
+  );
+});
+
+test("advanced plain search can target title body meta tags field date and filename", () => {
+  const searchItems = [
+    {
+      ...items[0],
+      title: "逆関数の微分",
+      text: "本文には arcsin の導出がある",
+      primary_field_path: "数学/微分積分/微分法",
+      tags: ["逆関数", "導関数"],
+      image_url: "/library/2026/02/08/2026-02-08_scan-05182026_p010.png",
+      xml_url: "/library/2026/02/08/2026-02-08_scan-05182026_p010.xml",
+    },
+    {
+      ...items[1],
+      title: "自由英作文",
+      text: "body text",
+      primary_field_path: "英語/作文",
+      tags: ["添削"],
+      image_url: "/library/2026/05/18/2026-05-18_scan-05182026_p011.png",
+      xml_url: "/library/2026/05/18/2026-05-18_scan-05182026_p011.xml",
+    },
+  ];
+  const [loaded] = update(initModel()[0], { type: "ContentsLoaded", items: searchItems });
+
+  const [titleSearch] = update(
+    update(loaded, { type: "AdvancedSearchScopeChanged", scope: SEARCH_SCOPES.TITLE })[0],
+    { type: "AdvancedSearchQueryChanged", value: "逆関数" },
+  );
+  assert.deepEqual(
+    filteredItems(titleSearch).map((item) => item.global_content_id),
+    ["a"],
+  );
+
+  const [bodySearch] = update(
+    update(loaded, { type: "AdvancedSearchScopeChanged", scope: SEARCH_SCOPES.BODY })[0],
+    { type: "AdvancedSearchQueryChanged", value: "arcsin" },
+  );
+  assert.deepEqual(
+    filteredItems(bodySearch).map((item) => item.global_content_id),
+    ["a"],
+  );
+
+  const [metaSearch] = update(
+    update(loaded, { type: "AdvancedSearchScopeChanged", scope: SEARCH_SCOPES.META })[0],
+    { type: "AdvancedSearchQueryChanged", value: "英語/作文" },
+  );
+  assert.deepEqual(
+    filteredItems(metaSearch).map((item) => item.global_content_id),
+    ["b"],
+  );
+
+  const [tagSearch] = update(
+    update(loaded, { type: "AdvancedSearchScopeChanged", scope: SEARCH_SCOPES.TAGS })[0],
+    { type: "AdvancedSearchQueryChanged", value: "導関数" },
+  );
+  assert.deepEqual(
+    filteredItems(tagSearch).map((item) => item.global_content_id),
+    ["a"],
+  );
+
+  const [fieldSearch] = update(
+    update(loaded, { type: "AdvancedSearchScopeChanged", scope: SEARCH_SCOPES.FIELD })[0],
+    { type: "AdvancedSearchQueryChanged", value: "英語/作文" },
+  );
+  assert.deepEqual(
+    filteredItems(fieldSearch).map((item) => item.global_content_id),
+    ["b"],
+  );
+
+  const [dateSearch] = update(
+    update(loaded, { type: "AdvancedSearchScopeChanged", scope: SEARCH_SCOPES.DATE })[0],
+    { type: "AdvancedSearchQueryChanged", value: "2026-05-18" },
+  );
+  assert.deepEqual(
+    filteredItems(dateSearch).map((item) => item.global_content_id),
+    ["b"],
+  );
+
+  const [filenameSearch] = update(
+    update(loaded, { type: "AdvancedSearchScopeChanged", scope: SEARCH_SCOPES.FILENAME })[0],
+    { type: "AdvancedSearchQueryChanged", value: "p010" },
+  );
+  assert.deepEqual(
+    filteredItems(filenameSearch).map((item) => item.global_content_id),
+    ["a"],
+  );
+});
+
+test("body search crosses XML element boundaries without requiring exact tag layout", () => {
+  const xmlSplitItems = [
+    {
+      ...items[0],
+      text: "",
+      xml_text: "<print><body><p><t>微分</t><formula><altText>公式</altText></formula></p></body></print>",
+    },
+  ];
+  const [loaded] = update(initModel()[0], { type: "ContentsLoaded", items: xmlSplitItems });
+  const [scopeChanged] = update(loaded, { type: "AdvancedSearchScopeChanged", scope: SEARCH_SCOPES.BODY });
+  const [searched] = update(scopeChanged, { type: "AdvancedSearchQueryChanged", value: "微分公式" });
+
+  assert.deepEqual(
+    filteredItems(searched).map((item) => item.global_content_id),
+    ["a"],
+  );
+});
+
+test("regex search supports scoped body patterns and reports invalid regex as data", () => {
+  const xmlSplitItems = [
+    {
+      ...items[0],
+      text: "",
+      xml_text: "<print><body><p><t>微分</t><formula><altText>公式</altText></formula></p></body></print>",
+    },
+  ];
+  const [loaded] = update(initModel()[0], { type: "ContentsLoaded", items: xmlSplitItems });
+  const [regexMode] = update(loaded, { type: "AdvancedSearchModeChanged", mode: SEARCH_MODES.REGEX });
+  const [bodyScope] = update(regexMode, { type: "AdvancedSearchScopeChanged", scope: SEARCH_SCOPES.BODY });
+  const [matched] = update(bodyScope, { type: "AdvancedSearchQueryChanged", value: "微分\\s+公式" });
+
+  assert.deepEqual(
+    filteredItems(matched).map((item) => item.global_content_id),
+    ["a"],
+  );
+
+  const [invalid] = update(bodyScope, { type: "AdvancedSearchQueryChanged", value: "[" });
+  assert.equal(filteredItems(invalid).length, 0);
+  const issue = advancedSearchIssue(invalid);
+  assert.equal(isSome(issue), true);
+  if (isSome(issue)) assert.equal(issue.value.code, "invalid_regex");
+});
+
+test("fuzzy search tolerates small OCR-like differences", () => {
+  const [loaded] = update(initModel()[0], { type: "ContentsLoaded", items });
+  const [fuzzyMode] = update(loaded, { type: "AdvancedSearchModeChanged", mode: SEARCH_MODES.FUZZY });
+  const [bodyScope] = update(fuzzyMode, { type: "AdvancedSearchScopeChanged", scope: SEARCH_SCOPES.BODY });
+  const [searched] = update(bodyScope, { type: "AdvancedSearchQueryChanged", value: "微文の問題" });
+
+  assert.deepEqual(
+    filteredItems(searched).map((item) => item.global_content_id),
+    ["a"],
+  );
+});
+
+test("browse filters and advanced search combine by intersection", () => {
+  const [loaded] = update(initModel()[0], { type: "ContentsLoaded", items: hierarchyItems });
+  const [mathFiltered] = update(loaded, { type: "FieldChanged", value: some("数学/") });
+  const [searched] = update(mathFiltered, { type: "AdvancedSearchQueryChanged", value: "確率" });
+
+  assert.deepEqual(
+    filteredItems(searched).map((item) => item.global_content_id),
     ["c"],
   );
 });

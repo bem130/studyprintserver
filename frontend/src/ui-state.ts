@@ -14,7 +14,7 @@ import {
   type Theme,
   type ToneState,
 } from "./viewer-core.js";
-import { isSome, none, optionMap, optionValueOr, some, type Option } from "./option.js";
+import { err, isOk, isSome, none, ok, optionMap, optionValueOr, some, type Option, type Result } from "./option.js";
 import type { StudyPrintItem } from "./generated/api-types.js";
 
 export type { StudyPrintItem };
@@ -53,6 +53,45 @@ export const DETAIL_TABS = {
 
 export type DetailTab = (typeof DETAIL_TABS)[keyof typeof DETAIL_TABS];
 
+export const SEARCH_MODES = {
+  PLAIN: "plain",
+  REGEX: "regex",
+  FUZZY: "fuzzy",
+} as const;
+
+export type SearchMode = (typeof SEARCH_MODES)[keyof typeof SEARCH_MODES];
+
+export const SEARCH_SCOPES = {
+  ALL: "all",
+  TITLE: "title",
+  BODY: "body",
+  META: "meta",
+  TAGS: "tags",
+  FIELD: "field",
+  DATE: "date",
+  FILENAME: "filename",
+} as const;
+
+export type SearchScope = (typeof SEARCH_SCOPES)[keyof typeof SEARCH_SCOPES];
+
+export const SEARCH_ISSUES = {
+  INVALID_REGEX: "invalid_regex",
+} as const;
+
+export type SearchIssueCode = (typeof SEARCH_ISSUES)[keyof typeof SEARCH_ISSUES];
+
+export interface SearchIssue {
+  code: SearchIssueCode;
+  detail: string;
+}
+
+export interface AdvancedSearchState {
+  query: string;
+  mode: SearchMode;
+  scope: SearchScope;
+  caseSensitive: boolean;
+}
+
 export interface LayoutState {
   filtersWidth: Option<number>;
   resultsWidth: Option<number>;
@@ -69,7 +108,7 @@ export interface Model {
   items: StudyPrintItem[];
   selectedId: Option<string>;
   status: string;
-  search: string;
+  advancedSearch: AdvancedSearchState;
   field: Option<string>;
   date: Option<string>;
   tag: Option<string>;
@@ -98,7 +137,11 @@ export type ResizeTarget = "filters" | "results" | "preview";
 export type Msg =
   | { type: "ContentsLoaded"; items: StudyPrintItem[] }
   | { type: "ContentsFailed"; message: string }
-  | { type: "SearchChanged"; value: string }
+  | { type: "AdvancedSearchQueryChanged"; value: string }
+  | { type: "AdvancedSearchModeChanged"; mode: SearchMode }
+  | { type: "AdvancedSearchScopeChanged"; scope: SearchScope }
+  | { type: "AdvancedSearchCaseSensitivityChanged"; caseSensitive: boolean }
+  | { type: "ResetAdvancedSearch" }
   | { type: "FieldChanged"; value: Option<string> }
   | { type: "DateChanged"; value: Option<string> }
   | { type: "TagToggled"; tag: string }
@@ -137,7 +180,12 @@ export function initModel(): [Model, Cmd[]] {
     items: [],
     selectedId: none(),
     status: "Loading index...",
-    search: "",
+    advancedSearch: {
+      query: "",
+      mode: SEARCH_MODES.PLAIN,
+      scope: SEARCH_SCOPES.ALL,
+      caseSensitive: false,
+    },
     field: none(),
     date: none(),
     tag: none(),
@@ -181,8 +229,33 @@ export function update(model: Model, msg: Msg): [Model, Cmd[]] {
     }
     case "ContentsFailed":
       return [{ ...model, status: msg.message }, []];
-    case "SearchChanged":
-      return [normalizeSelection({ ...model, search: msg.value }), []];
+    case "AdvancedSearchQueryChanged":
+      return [normalizeSelection({ ...model, advancedSearch: { ...model.advancedSearch, query: msg.value } }), []];
+    case "AdvancedSearchModeChanged":
+      return [normalizeSelection({ ...model, advancedSearch: { ...model.advancedSearch, mode: msg.mode } }), []];
+    case "AdvancedSearchScopeChanged":
+      return [normalizeSelection({ ...model, advancedSearch: { ...model.advancedSearch, scope: msg.scope } }), []];
+    case "AdvancedSearchCaseSensitivityChanged":
+      return [
+        normalizeSelection({
+          ...model,
+          advancedSearch: { ...model.advancedSearch, caseSensitive: msg.caseSensitive },
+        }),
+        [],
+      ];
+    case "ResetAdvancedSearch":
+      return [
+        normalizeSelection({
+          ...model,
+          advancedSearch: {
+            query: "",
+            mode: SEARCH_MODES.PLAIN,
+            scope: SEARCH_SCOPES.ALL,
+            caseSensitive: false,
+          },
+        }),
+        [],
+      ];
     case "FieldChanged":
       return [normalizeSelection({ ...model, field: msg.value }), []];
     case "DateChanged":
@@ -323,24 +396,28 @@ export function update(model: Model, msg: Msg): [Model, Cmd[]] {
 }
 
 export function filteredItems(model: Model): StudyPrintItem[] {
-  const query = model.search.trim().toLowerCase();
+  const matcher = advancedSearchMatcher(model.advancedSearch);
   return model.items.filter((item) => {
-    const searchable = [
-      item.title,
-      item.primary_field_path,
-      item.print_id,
-      item.text,
-      item.tags.join(" "),
-    ]
-      .join(" ")
-      .toLowerCase();
     return (
-      queryMatches(query, searchable) &&
+      advancedSearchMatches(matcher, item) &&
       fieldMatches(model.field, item) &&
       dateMatches(model.date, item) &&
       tagMatches(model.tag, item)
     );
   });
+}
+
+export function advancedSearchIssue(model: Model): Option<SearchIssue> {
+  const matcher = advancedSearchMatcher(model.advancedSearch);
+  if (isOk(matcher)) return none();
+  return some(matcher.error);
+}
+
+export function searchIssueText(issue: SearchIssue): string {
+  switch (issue.code) {
+    case SEARCH_ISSUES.INVALID_REGEX:
+      return `Invalid regular expression: ${issue.detail}`;
+  }
 }
 
 export function selectedItem(model: Model): Option<StudyPrintItem> {
@@ -396,6 +473,40 @@ export function toneLabel(model: Model): string {
   return "Paper";
 }
 
+export function searchModeFromValue(value: string): Option<SearchMode> {
+  switch (value) {
+    case SEARCH_MODES.PLAIN:
+      return some(SEARCH_MODES.PLAIN);
+    case SEARCH_MODES.REGEX:
+      return some(SEARCH_MODES.REGEX);
+    case SEARCH_MODES.FUZZY:
+      return some(SEARCH_MODES.FUZZY);
+  }
+  return none();
+}
+
+export function searchScopeFromValue(value: string): Option<SearchScope> {
+  switch (value) {
+    case SEARCH_SCOPES.ALL:
+      return some(SEARCH_SCOPES.ALL);
+    case SEARCH_SCOPES.TITLE:
+      return some(SEARCH_SCOPES.TITLE);
+    case SEARCH_SCOPES.BODY:
+      return some(SEARCH_SCOPES.BODY);
+    case SEARCH_SCOPES.META:
+      return some(SEARCH_SCOPES.META);
+    case SEARCH_SCOPES.TAGS:
+      return some(SEARCH_SCOPES.TAGS);
+    case SEARCH_SCOPES.FIELD:
+      return some(SEARCH_SCOPES.FIELD);
+    case SEARCH_SCOPES.DATE:
+      return some(SEARCH_SCOPES.DATE);
+    case SEARCH_SCOPES.FILENAME:
+      return some(SEARCH_SCOPES.FILENAME);
+  }
+  return none();
+}
+
 function normalizeSelection(model: Model): Model {
   const filtered = filteredItems(model);
   if (filtered.length === 0) {
@@ -409,11 +520,6 @@ function normalizeSelection(model: Model): Model {
   }
   const first = firstOption(filtered);
   return selectItem(model, optionMap(first, (item) => item.global_content_id));
-}
-
-function queryMatches(query: string, searchable: string): boolean {
-  if (query.length === 0) return true;
-  return searchable.includes(query);
 }
 
 function fieldMatches(field: Option<string>, item: StudyPrintItem): boolean {
@@ -437,6 +543,253 @@ function tagMatches(tag: Option<string>, item: StudyPrintItem): boolean {
 function nextTag(current: Option<string>, tag: string): Option<string> {
   if (isSome(current) && current.value === tag) return none();
   return some(tag);
+}
+
+type AdvancedMatcher =
+  | {
+      type: typeof SEARCH_MODES.PLAIN;
+      scope: SearchScope;
+      needle: string;
+      compactNeedle: string;
+      caseSensitive: boolean;
+    }
+  | { type: typeof SEARCH_MODES.REGEX; scope: SearchScope; pattern: RegExp }
+  | {
+      type: typeof SEARCH_MODES.FUZZY;
+      scope: SearchScope;
+      needle: string;
+      compactNeedle: string;
+      caseSensitive: boolean;
+    };
+
+interface SearchSource {
+  title: string;
+  body: string;
+  meta: string;
+  tags: string;
+  field: string;
+  date: string;
+  filename: string;
+  all: string;
+}
+
+function advancedSearchMatcher(search: AdvancedSearchState): Result<Option<AdvancedMatcher>, SearchIssue> {
+  const query = search.query.trim();
+  if (query.length === 0) return ok(none());
+  switch (search.mode) {
+    case SEARCH_MODES.PLAIN:
+      return ok(
+        some({
+          type: SEARCH_MODES.PLAIN,
+          scope: search.scope,
+          needle: normalizeSearchText(query, search.caseSensitive),
+          compactNeedle: compactSearchText(query, search.caseSensitive),
+          caseSensitive: search.caseSensitive,
+        }),
+      );
+    case SEARCH_MODES.REGEX:
+      return regexMatcher(query, search.scope, search.caseSensitive);
+    case SEARCH_MODES.FUZZY:
+      return ok(
+        some({
+          type: SEARCH_MODES.FUZZY,
+          scope: search.scope,
+          needle: normalizeSearchText(query, search.caseSensitive),
+          compactNeedle: compactSearchText(query, search.caseSensitive),
+          caseSensitive: search.caseSensitive,
+        }),
+      );
+  }
+}
+
+function regexMatcher(
+  query: string,
+  scope: SearchScope,
+  caseSensitive: boolean,
+): Result<Option<AdvancedMatcher>, SearchIssue> {
+  try {
+    const flags = caseSensitive ? "u" : "iu";
+    return ok(some({ type: SEARCH_MODES.REGEX, scope, pattern: new RegExp(query, flags) }));
+  } catch (error) {
+    return err({
+      code: SEARCH_ISSUES.INVALID_REGEX,
+      detail: errorText(error),
+    });
+  }
+}
+
+function advancedSearchMatches(
+  matcherResult: Result<Option<AdvancedMatcher>, SearchIssue>,
+  item: StudyPrintItem,
+): boolean {
+  if (!isOk(matcherResult)) return false;
+  if (!isSome(matcherResult.value)) return true;
+  const source = searchSource(item);
+  const haystack = sourceForScope(source, matcherResult.value.value.scope);
+  return matcherMatches(matcherResult.value.value, haystack);
+}
+
+function searchSource(item: StudyPrintItem): SearchSource {
+  const filename = [pathFileName(item.image_url), pathFileName(item.xml_url)].join(" ");
+  const tags = item.tags.join(" ");
+  const field = item.primary_field_path;
+  const date = item.logical_date;
+  const body = [item.text, xmlBodyText(item.xml_text)].join(" ");
+  const meta = [
+    item.print_id,
+    item.global_content_id,
+    date,
+    field,
+    tags,
+    filename,
+  ].join(" ");
+  const all = [item.title, body, meta, filename, xmlVisibleText(item.xml_text)].join(" ");
+  return { title: item.title, body, meta, tags, field, date, filename, all };
+}
+
+function sourceForScope(source: SearchSource, scope: SearchScope): string {
+  switch (scope) {
+    case SEARCH_SCOPES.ALL:
+      return source.all;
+    case SEARCH_SCOPES.TITLE:
+      return source.title;
+    case SEARCH_SCOPES.BODY:
+      return source.body;
+    case SEARCH_SCOPES.META:
+      return source.meta;
+    case SEARCH_SCOPES.TAGS:
+      return source.tags;
+    case SEARCH_SCOPES.FIELD:
+      return source.field;
+    case SEARCH_SCOPES.DATE:
+      return source.date;
+    case SEARCH_SCOPES.FILENAME:
+      return source.filename;
+  }
+}
+
+function matcherMatches(matcher: AdvancedMatcher, source: string): boolean {
+  switch (matcher.type) {
+    case SEARCH_MODES.PLAIN:
+      return plainSearchMatches(matcher.needle, matcher.compactNeedle, source, matcher.caseSensitive);
+    case SEARCH_MODES.REGEX:
+      matcher.pattern.lastIndex = 0;
+      return matcher.pattern.test(source);
+    case SEARCH_MODES.FUZZY:
+      return fuzzySearchMatches(matcher.needle, matcher.compactNeedle, source, matcher.caseSensitive);
+  }
+}
+
+function plainSearchMatches(needle: string, compactNeedle: string, source: string, caseSensitive: boolean): boolean {
+  const normalized = normalizeSearchText(source, caseSensitive);
+  if (normalized.includes(needle)) return true;
+  return compactSearchText(source, caseSensitive).includes(compactNeedle);
+}
+
+function fuzzySearchMatches(needle: string, compactNeedle: string, source: string, caseSensitive: boolean): boolean {
+  if (plainSearchMatches(needle, compactNeedle, source, caseSensitive)) return true;
+  if (compactNeedle.length < 2) return false;
+  return withinEditDistance(compactNeedle, compactSearchText(source, caseSensitive), fuzzyThreshold(compactNeedle.length));
+}
+
+function fuzzyThreshold(length: number): number {
+  if (length <= 5) return 1;
+  if (length <= 10) return 2;
+  return 3;
+}
+
+function withinEditDistance(needle: string, haystack: string, threshold: number): boolean {
+  if (needle.length === 0) return true;
+  if (haystack.length === 0) return false;
+  const minWindow = Math.max(1, needle.length - threshold);
+  const maxWindow = needle.length + threshold;
+  for (let start = 0; start < haystack.length; start += 1) {
+    for (let windowLength = minWindow; windowLength <= maxWindow; windowLength += 1) {
+      const end = start + windowLength;
+      if (end > haystack.length) continue;
+      if (levenshteinWithin(needle, haystack.slice(start, end), threshold)) return true;
+    }
+  }
+  return false;
+}
+
+function levenshteinWithin(left: string, right: string, threshold: number): boolean {
+  const previous = Array.from({ length: right.length + 1 }, (_, index) => index);
+  for (let leftIndex = 1; leftIndex <= left.length; leftIndex += 1) {
+    const current = [leftIndex];
+    let rowMinimum = current[0] as number;
+    for (let rightIndex = 1; rightIndex <= right.length; rightIndex += 1) {
+      const cost = left[leftIndex - 1] === right[rightIndex - 1] ? 0 : 1;
+      const deletion = (previous[rightIndex] as number) + 1;
+      const insertion = (current[rightIndex - 1] as number) + 1;
+      const substitution = (previous[rightIndex - 1] as number) + cost;
+      const value = Math.min(deletion, insertion, substitution);
+      current[rightIndex] = value;
+      rowMinimum = Math.min(rowMinimum, value);
+    }
+    if (rowMinimum > threshold) return false;
+    for (let index = 0; index < current.length; index += 1) {
+      previous[index] = current[index] as number;
+    }
+  }
+  return (previous[right.length] as number) <= threshold;
+}
+
+function normalizeSearchText(value: string, caseSensitive: boolean): string {
+  const normalized = value.normalize("NFKC").replace(/\s+/gu, " ").trim();
+  if (caseSensitive) return normalized;
+  return normalized.toLocaleLowerCase("ja-JP");
+}
+
+function compactSearchText(value: string, caseSensitive: boolean): string {
+  return normalizeSearchText(value, caseSensitive).replace(/\s+/gu, "");
+}
+
+function xmlBodyText(xml: string): string {
+  const open = nullableOption(/<body\b[^>]*>/u.exec(xml));
+  if (!isSome(open)) return "";
+  const start = open.value.index + open.value[0].length;
+  const rest = xml.slice(start);
+  const close = nullableOption(/<\/body>/u.exec(rest));
+  if (!isSome(close)) return xmlVisibleText(rest);
+  return xmlVisibleText(rest.slice(0, close.value.index));
+}
+
+function xmlVisibleText(xml: string): string {
+  return decodeBasicEntities(
+    xml
+      .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/gu, " $1 ")
+      .replace(/<[^>]+>/gu, " "),
+  ).replace(/\s+/gu, " ");
+}
+
+function decodeBasicEntities(value: string): string {
+  return value
+    .replace(/&lt;/gu, "<")
+    .replace(/&gt;/gu, ">")
+    .replace(/&amp;/gu, "&")
+    .replace(/&quot;/gu, '"')
+    .replace(/&apos;/gu, "'");
+}
+
+function pathFileName(path: string): string {
+  const parts = path.split("/").filter((part) => part.length > 0);
+  const last = lastOption(parts);
+  return optionValueOr(last, path);
+}
+
+function lastOption<T>(values: T[]): Option<T> {
+  if (values.length === 0) return none();
+  return some(values[values.length - 1] as T);
+}
+
+function nullableOption<T>(value: T | null): Option<T> {
+  return value === null ? none() : some(value);
+}
+
+function errorText(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  return String(error);
 }
 
 function nextFullscreenToolsFromTab(state: FullscreenToolsState): FullscreenToolsState {

@@ -22,8 +22,11 @@ import {
   FULLSCREEN_TOOLS,
   MAX_ZOOM,
   MIN_ZOOM,
+  SEARCH_MODES,
+  SEARCH_SCOPES,
   ZOOM_STEP,
   activeSourceSize,
+  advancedSearchIssue,
   dateCounts,
   fieldCounts,
   filteredItems,
@@ -31,6 +34,8 @@ import {
   metricValues,
   needsCanvasProcessing,
   selectedItem,
+  searchIssueText,
+  searchScopeFromValue,
   tagCounts,
   toneAdjustmentsActive,
   toneLabel,
@@ -42,6 +47,8 @@ import {
   type Model,
   type Msg,
   type ResizeTarget,
+  type SearchMode,
+  type SearchScope,
   type StudyPrintItem,
 } from "./ui-state.js";
 import { isSome, none, optionValueOr, some, type Option } from "./option.js";
@@ -378,19 +385,7 @@ function viewFilters(current: Model, send: Dispatch): VNode {
   return h(
     "aside",
     { id: "filtersPanel", class: "filters", "aria-label": "filters" },
-    h(
-      "label",
-      { class: "filter-block" },
-      h("span", {}, "Search"),
-      h("input", {
-        id: "searchInput",
-        type: "search",
-        autocomplete: "off",
-        value: current.search,
-        onInput: (event: Event) =>
-          send({ type: "SearchChanged", value: (event.currentTarget as HTMLInputElement).value }),
-      }),
-    ),
+    h("div", { class: "filter-section-title" }, "Browse"),
     selectFilter("fieldSelect", "Field", "All fields", current.field, fields, fieldOptionLabel(fields), (value) =>
       send({ type: "FieldChanged", value: selectValueOption(value) }),
     ),
@@ -421,7 +416,112 @@ function viewFilters(current: Model, send: Dispatch): VNode {
           ),
       ),
     ),
+    h("div", { class: "filter-section-title" }, "Advanced"),
+    viewAdvancedSearch(current, send),
   );
+}
+
+function viewAdvancedSearch(current: Model, send: Dispatch): VNode {
+  const issue = advancedSearchIssue(current);
+  return h(
+    "div",
+    { class: "advanced-search" },
+    h(
+      "label",
+      { class: "filter-block" },
+      h("span", {}, "Query"),
+      h("input", {
+        id: "advancedSearchInput",
+        type: "search",
+        autocomplete: "off",
+        value: current.advancedSearch.query,
+        onInput: (event: Event) =>
+          send({
+            type: "AdvancedSearchQueryChanged",
+            value: (event.currentTarget as HTMLInputElement).value,
+          }),
+      }),
+    ),
+    h(
+      "div",
+      { class: "filter-block" },
+      h("span", {}, "Mode"),
+      h(
+        "div",
+        { class: "segmented" },
+        searchModeButton("Text", SEARCH_MODES.PLAIN, current.advancedSearch.mode, send),
+        searchModeButton("Regex", SEARCH_MODES.REGEX, current.advancedSearch.mode, send),
+        searchModeButton("Fuzzy", SEARCH_MODES.FUZZY, current.advancedSearch.mode, send),
+      ),
+    ),
+    h(
+      "label",
+      { class: "filter-block" },
+      h("span", {}, "Target"),
+      h(
+        "select",
+        {
+          id: "advancedSearchScope",
+          value: current.advancedSearch.scope,
+          onChange: (event: Event) => {
+            const scope = searchScopeFromValue((event.currentTarget as HTMLSelectElement).value);
+            if (isSome(scope)) send({ type: "AdvancedSearchScopeChanged", scope: scope.value });
+          },
+        },
+        searchScopeOption("All", SEARCH_SCOPES.ALL),
+        searchScopeOption("Title", SEARCH_SCOPES.TITLE),
+        searchScopeOption("Body", SEARCH_SCOPES.BODY),
+        searchScopeOption("Meta", SEARCH_SCOPES.META),
+        searchScopeOption("Tags", SEARCH_SCOPES.TAGS),
+        searchScopeOption("Field", SEARCH_SCOPES.FIELD),
+        searchScopeOption("Date", SEARCH_SCOPES.DATE),
+        searchScopeOption("Filename", SEARCH_SCOPES.FILENAME),
+      ),
+    ),
+    h(
+      "label",
+      { class: "filter-block" },
+      h("span", {}, "Case"),
+      h(
+        "select",
+        {
+          id: "advancedSearchCase",
+          value: current.advancedSearch.caseSensitive ? "sensitive" : "insensitive",
+          onChange: (event: Event) =>
+            send({
+              type: "AdvancedSearchCaseSensitivityChanged",
+              caseSensitive: (event.currentTarget as HTMLSelectElement).value === "sensitive",
+            }),
+        },
+        h("option", { value: "insensitive" }, "Ignore case"),
+        h("option", { value: "sensitive" }, "Match case"),
+      ),
+    ),
+    toolButton("Reset search", {
+      ...toolButtonBase(),
+      id: some("advancedSearchReset"),
+      wide: true,
+      title: some("Clear advanced search"),
+      onClick: some(() => send({ type: "ResetAdvancedSearch" })),
+    }),
+    isSome(issue) ? h("div", { class: "filter-error" }, searchIssueText(issue.value)) : h("div", { class: "filter-hint" }, ""),
+  );
+}
+
+function searchModeButton(label: string, mode: SearchMode, current: SearchMode, send: Dispatch): VNode {
+  return h(
+    "button",
+    {
+      type: "button",
+      class: current === mode ? "segmented-button segmented-button-active" : "segmented-button",
+      onClick: () => send({ type: "AdvancedSearchModeChanged", mode }),
+    },
+    label,
+  );
+}
+
+function searchScopeOption(label: string, scope: SearchScope): VNode {
+  return h("option", { value: scope }, label);
 }
 
 function selectFilter(
