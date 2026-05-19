@@ -1,7 +1,7 @@
 import { isSome, none, optionValueOr, some, type Option } from "./option.js";
 import { h, type VNode } from "./vdom.js";
 
-const STUDYPRINT_NS = "urn:slf:studyprint:0.5";
+const STUDYPRINT_NAMESPACES = ["urn:slf:studyprint:0.5", "urn:slf:studyprint:0.6"];
 
 const BODY_DISPLAY_SKIPPED_ELEMENTS = new Set(["tex", "altText"]);
 const BLOCK_FORMULA_DISPLAY = "block";
@@ -245,9 +245,9 @@ function contentIdFromGlobal(globalContentId: string): Option<string> {
 }
 
 function firstDescendantByLocalName(element: Element, localName: string): Option<Element> {
-  const namespaced = element.getElementsByTagNameNS(STUDYPRINT_NS, localName);
-  const firstNamespaced = nullableOption(namespaced.item(0));
-  if (isSome(firstNamespaced)) return some(firstNamespaced.value);
+  for (const namespaced of namespacedElementsByLocalName(element, localName)) {
+    return some(namespaced);
+  }
 
   const fallback = element.getElementsByTagName(localName);
   const firstFallback = nullableOption(fallback.item(0));
@@ -255,18 +255,25 @@ function firstDescendantByLocalName(element: Element, localName: string): Option
 }
 
 function elementsByLocalName(document: Document, localName: string): Element[] {
-  const elements: Element[] = [];
-  const namespaced = document.getElementsByTagNameNS(STUDYPRINT_NS, localName);
-  for (let index = 0; index < namespaced.length; index += 1) {
-    const element = nullableOption(namespaced.item(index));
-    if (isSome(element)) elements.push(element.value);
-  }
+  const elements = namespacedElementsByLocalName(document, localName);
   if (elements.length > 0) return elements;
 
   const fallback = document.getElementsByTagName(localName);
   for (let index = 0; index < fallback.length; index += 1) {
     const element = nullableOption(fallback.item(index));
     if (isSome(element)) elements.push(element.value);
+  }
+  return elements;
+}
+
+function namespacedElementsByLocalName(root: Document | Element, localName: string): Element[] {
+  const elements: Element[] = [];
+  for (const namespace of STUDYPRINT_NAMESPACES) {
+    const namespaced = root.getElementsByTagNameNS(namespace, localName);
+    for (let index = 0; index < namespaced.length; index += 1) {
+      const element = nullableOption(namespaced.item(index));
+      if (isSome(element)) elements.push(element.value);
+    }
   }
   return elements;
 }

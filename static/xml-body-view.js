@@ -1,6 +1,6 @@
 import { isSome, none, optionValueOr, some } from "./option.js";
 import { h } from "./vdom.js";
-const STUDYPRINT_NS = "urn:slf:studyprint:0.5";
+const STUDYPRINT_NAMESPACES = ["urn:slf:studyprint:0.5", "urn:slf:studyprint:0.6"];
 const BODY_DISPLAY_SKIPPED_ELEMENTS = new Set(["tex", "altText"]);
 const BLOCK_FORMULA_DISPLAY = "block";
 export function viewStudyPrintBody(xmlText, globalContentId) {
@@ -183,22 +183,15 @@ function contentIdFromGlobal(globalContentId) {
     return firstArrayItem(parts.slice(parts.length - 1));
 }
 function firstDescendantByLocalName(element, localName) {
-    const namespaced = element.getElementsByTagNameNS(STUDYPRINT_NS, localName);
-    const firstNamespaced = nullableOption(namespaced.item(0));
-    if (isSome(firstNamespaced))
-        return some(firstNamespaced.value);
+    for (const namespaced of namespacedElementsByLocalName(element, localName)) {
+        return some(namespaced);
+    }
     const fallback = element.getElementsByTagName(localName);
     const firstFallback = nullableOption(fallback.item(0));
     return isSome(firstFallback) ? some(firstFallback.value) : none();
 }
 function elementsByLocalName(document, localName) {
-    const elements = [];
-    const namespaced = document.getElementsByTagNameNS(STUDYPRINT_NS, localName);
-    for (let index = 0; index < namespaced.length; index += 1) {
-        const element = nullableOption(namespaced.item(index));
-        if (isSome(element))
-            elements.push(element.value);
-    }
+    const elements = namespacedElementsByLocalName(document, localName);
     if (elements.length > 0)
         return elements;
     const fallback = document.getElementsByTagName(localName);
@@ -206,6 +199,18 @@ function elementsByLocalName(document, localName) {
         const element = nullableOption(fallback.item(index));
         if (isSome(element))
             elements.push(element.value);
+    }
+    return elements;
+}
+function namespacedElementsByLocalName(root, localName) {
+    const elements = [];
+    for (const namespace of STUDYPRINT_NAMESPACES) {
+        const namespaced = root.getElementsByTagNameNS(namespace, localName);
+        for (let index = 0; index < namespaced.length; index += 1) {
+            const element = nullableOption(namespaced.item(index));
+            if (isSome(element))
+                elements.push(element.value);
+        }
     }
     return elements;
 }
