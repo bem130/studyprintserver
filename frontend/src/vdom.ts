@@ -1,38 +1,34 @@
-export type VPrimitiveChild = VNode | string | number | boolean | null | undefined;
+import { isSome, none, optionMap, optionValueOr, some, type Option } from "./option.js";
+
+export type VPrimitiveChild = VNode | string | number;
 export type VChild = VPrimitiveChild | VPrimitiveChild[];
 
 export interface VNode {
   tag: string;
   props: VProps;
   children: Array<VNode | string>;
-  key?: string;
+  key: Option<string>;
 }
 
-export type VStyle = Partial<Record<keyof CSSStyleDeclaration, string>> & Record<string, string>;
-
-export interface VProps {
-  key?: string;
-  class?: string;
-  className?: string;
-  style?: VStyle | string;
-  value?: string | number;
-  checked?: boolean;
-  disabled?: boolean;
-  selected?: boolean;
-  [name: string]: unknown;
-}
+export type VStyle = Record<string, string>;
+export type VEventHandler =
+  | ((event: Event) => void)
+  | ((event: KeyboardEvent) => void)
+  | ((event: PointerEvent) => void);
+export type VPropValue = string | number | boolean | VStyle | VEventHandler;
+export type VProps = Record<string, VPropValue>;
 
 const listeners = new WeakMap<Element, Map<string, EventListener>>();
+
+type DisableableElement = HTMLElement & { disabled: boolean };
 
 export function h(tag: string, props: VProps = {}, ...children: VChild[]): VNode {
   const node: VNode = {
     tag,
     props,
     children: normalizeChildren(children),
+    key: propKey(props),
   };
-  if (typeof props.key === "string") {
-    node.key = props.key;
-  }
   return node;
 }
 
@@ -41,11 +37,12 @@ export function mount(parent: Element, node: VNode): VNode {
   return node;
 }
 
-export function patch(parent: Element, oldNode: VNode | null, newNode: VNode): VNode {
-  if (!oldNode || !parent.firstChild) {
+export function patch(parent: Element, oldNode: VNode, newNode: VNode): VNode {
+  const firstChild = firstChildOption(parent);
+  if (!isSome(firstChild)) {
     return mount(parent, newNode);
   }
-  patchNode(parent, parent.firstChild, oldNode, newNode);
+  patchNode(parent, firstChild.value, oldNode, newNode);
   return newNode;
 }
 
@@ -54,7 +51,7 @@ function normalizeChildren(children: VChild[]): Array<VNode | string> {
   for (const child of children) {
     if (Array.isArray(child)) {
       normalized.push(...normalizeChildren(child));
-    } else if (child != null && child !== false) {
+    } else {
       normalized.push(typeof child === "object" ? child : String(child));
     }
   }
@@ -66,33 +63,45 @@ function createElement(node: VNode | string): Node {
     return document.createTextNode(node);
   }
   const element = document.createElement(node.tag);
-  for (const child of node.children) {
-    element.append(createElement(child));
+  if (!hasInnerHtml(node.props)) {
+    for (const child of node.children) {
+      element.append(createElement(child));
+    }
   }
   patchProps(element, {}, node.props);
   return element;
 }
 
-function patchNode(parent: Element, domNode: Node, oldNode: VNode | string, newNode: VNode | string): void {
+function patchNode(parent: Element, domNode: Node, oldNode: VNode | string, newNode: VNode | string): Node {
   if (typeof oldNode === "string" || typeof newNode === "string") {
     if (oldNode !== newNode) {
-      parent.replaceChild(createElement(newNode), domNode);
+      const replacement = createElement(newNode);
+      parent.replaceChild(replacement, domNode);
+      return replacement;
     }
-    return;
+    return domNode;
   }
 
-  if (oldNode.tag !== newNode.tag || oldNode.key !== newNode.key) {
-    parent.replaceChild(createElement(newNode), domNode);
-    return;
+  if (oldNode.tag !== newNode.tag || !optionStringSame(oldNode.key, newNode.key)) {
+    const replacement = createElement(newNode);
+    parent.replaceChild(replacement, domNode);
+    return replacement;
   }
 
   if (!(domNode instanceof Element)) {
-    parent.replaceChild(createElement(newNode), domNode);
-    return;
+    const replacement = createElement(newNode);
+    parent.replaceChild(replacement, domNode);
+    return replacement;
+  }
+
+  if (hasInnerHtml(oldNode.props) || hasInnerHtml(newNode.props)) {
+    patchProps(domNode, oldNode.props, newNode.props);
+    return domNode;
   }
 
   patchChildren(domNode, oldNode.children, newNode.children);
   patchProps(domNode, oldNode.props, newNode.props);
+  return domNode;
 }
 
 function patchChildren(
@@ -104,40 +113,54 @@ function patchChildren(
   const nextDomChildren: Node[] = [];
 
   for (let index = 0; index < newChildren.length; index += 1) {
-    const newChild = newChildren[index];
-    if (newChild == null) continue;
-    const key = typeof newChild === "string" ? undefined : newChild.key;
-    const keyed = key ? oldKeyed.get(key) : undefined;
-    const currentDom = keyed?.dom ?? parent.childNodes[index] ?? null;
-    const oldChild = keyed?.node ?? oldChildren[index];
+    const newChild = arrayItem(newChildren, index);
+    if (!isSome(newChild)) continue;
+    const key = vnodeKey(newChild.value);
+    const keyed = isSome(key)
+      ? mapItem(oldKeyed, key.value)
+      : none<{ node: VNode; dom: Node }>();
+    const currentDom = isSome(keyed)
+      ? some(keyed.value.dom)
+      : childNode(parent.childNodes, index);
+    const oldChild = isSome(keyed)
+      ? some<VNode | string>(keyed.value.node)
+      : arrayItem(oldChildren, index);
 
-    if (!currentDom || oldChild == null) {
-      const created = createElement(newChild);
+    if (!isSome(currentDom) || !isSome(oldChild)) {
+      const created = createElement(newChild.value);
       parent.append(created);
       nextDomChildren.push(created);
     } else {
-      patchNode(parent, currentDom, oldChild, newChild);
-      nextDomChildren.push(currentDom);
+      nextDomChildren.push(patchNode(parent, currentDom.value, oldChild.value, newChild.value));
     }
   }
 
   while (parent.childNodes.length > newChildren.length) {
-    parent.lastChild?.remove();
+    const extra = childNode(parent.childNodes, newChildren.length);
+    if (isSome(extra)) extra.value.remove();
+    else return;
   }
 
   nextDomChildren.forEach((child, index) => {
     if (parent.childNodes[index] !== child) {
-      parent.insertBefore(child, parent.childNodes[index] ?? null);
+      const before = childNode(parent.childNodes, index);
+      insertChild(parent, child, before);
     }
   });
+}
+
+function insertChild(parent: Element, child: Node, before: Option<Node>): void {
+  if (isSome(before)) parent.insertBefore(child, before.value);
+  else parent.append(child);
 }
 
 function keyedChildren(children: Array<VNode | string>, nodes: NodeListOf<ChildNode>): Map<string, { node: VNode; dom: Node }> {
   const keyed = new Map<string, { node: VNode; dom: Node }>();
   children.forEach((child, index) => {
-    if (typeof child !== "string" && child.key) {
-      const dom = nodes[index];
-      if (dom) keyed.set(child.key, { node: child, dom });
+    const key = vnodeKey(child);
+    if (isSome(key)) {
+      const dom = childNode(nodes, index);
+      if (isSome(dom) && typeof child !== "string") keyed.set(key.value, { node: child, dom: dom.value });
     }
   });
   return keyed;
@@ -147,21 +170,25 @@ function patchProps(element: Element, oldProps: VProps, newProps: VProps): void 
   const names = new Set([...Object.keys(oldProps), ...Object.keys(newProps)]);
   for (const name of names) {
     if (name === "key") continue;
-    const oldValue = oldProps[name];
-    const newValue = newProps[name];
-    if (oldValue === newValue) continue;
+    const oldValue = propValue(oldProps, name);
+    const newValue = propValue(newProps, name);
+    if (name === "innerHTML") {
+      setProp(element, name, oldValue, newValue);
+      continue;
+    }
+    if (optionSame(oldValue, newValue)) continue;
     setProp(element, name, oldValue, newValue);
   }
 }
 
-function setProp(element: Element, name: string, oldValue: unknown, newValue: unknown): void {
-  if (name.startsWith("on") && typeof newValue !== "string") {
-    setListener(element, name.slice(2).toLowerCase(), oldValue, newValue);
-    return;
-  }
+function optionSame<T>(left: Option<T>, right: Option<T>): boolean {
+  if (!isSome(left) && !isSome(right)) return true;
+  return isSome(left) && isSome(right) && left.value === right.value;
+}
 
-  if (name === "className") {
-    setAttribute(element, "class", newValue);
+function setProp(element: Element, name: string, oldValue: Option<VPropValue>, newValue: Option<VPropValue>): void {
+  if (name.startsWith("on")) {
+    setListener(element, name.slice(2).toLowerCase(), newValue);
     return;
   }
 
@@ -170,17 +197,23 @@ function setProp(element: Element, name: string, oldValue: unknown, newValue: un
     return;
   }
 
+  if (name === "innerHTML") {
+    setInnerHtml(element, newValue);
+    return;
+  }
+
   if (name === "value" && "value" in element) {
-    const value = newValue == null ? "" : String(newValue);
+    const value = optionValueOr(optionMap(newValue, (value) => String(value)), "");
     if ((element as HTMLInputElement | HTMLSelectElement).value !== value) {
       (element as HTMLInputElement | HTMLSelectElement).value = value;
     }
     return;
   }
 
-  if ((name === "checked" || name === "disabled" || name === "selected") && name in element) {
-    (element as unknown as Record<string, boolean>)[name] = Boolean(newValue);
-    if (!newValue) element.removeAttribute(name);
+  if (name === "disabled" && name in element) {
+    const enabled = isSome(newValue) && Boolean(newValue.value);
+    (element as DisableableElement).disabled = enabled;
+    if (!enabled) element.removeAttribute(name);
     else element.setAttribute(name, "");
     return;
   }
@@ -188,7 +221,16 @@ function setProp(element: Element, name: string, oldValue: unknown, newValue: un
   setAttribute(element, name, newValue);
 }
 
-function setListener(element: Element, eventName: string, oldValue: unknown, newValue: unknown): void {
+function hasInnerHtml(props: VProps): boolean {
+  const value = propValue(props, "innerHTML");
+  return isSome(value) && typeof value.value === "string";
+}
+
+function setInnerHtml(element: Element, value: Option<VPropValue>): void {
+  element.innerHTML = isSome(value) && typeof value.value === "string" ? value.value : "";
+}
+
+function setListener(element: Element, eventName: string, newValue: Option<VPropValue>): void {
   let elementListeners = listeners.get(element);
   if (!elementListeners) {
     elementListeners = new Map();
@@ -201,27 +243,22 @@ function setListener(element: Element, eventName: string, oldValue: unknown, new
     elementListeners.delete(eventName);
   }
 
-  if (typeof newValue === "function") {
-    const listener = newValue as EventListener;
+  if (isSome(newValue) && typeof newValue.value === "function") {
+    const listener = newValue.value as EventListener;
     element.addEventListener(eventName, listener);
     elementListeners.set(eventName, listener);
   }
 }
 
-function setStyle(element: HTMLElement, oldValue: unknown, newValue: unknown): void {
-  if (typeof oldValue === "object" && oldValue) {
-    for (const key of Object.keys(oldValue)) {
+function setStyle(element: HTMLElement, oldValue: Option<VPropValue>, newValue: Option<VPropValue>): void {
+  if (isSome(oldValue) && typeof oldValue.value === "object" && oldValue.value) {
+    for (const key of Object.keys(oldValue.value)) {
       element.style.removeProperty(kebab(key));
     }
   }
 
-  if (typeof newValue === "string") {
-    element.setAttribute("style", newValue);
-    return;
-  }
-
-  if (typeof newValue === "object" && newValue) {
-    for (const [key, value] of Object.entries(newValue as Record<string, string>)) {
+  if (isSome(newValue) && typeof newValue.value === "object" && newValue.value) {
+    for (const [key, value] of Object.entries(newValue.value as VStyle)) {
       element.style.setProperty(kebab(key), value);
     }
     return;
@@ -230,16 +267,56 @@ function setStyle(element: HTMLElement, oldValue: unknown, newValue: unknown): v
   element.removeAttribute("style");
 }
 
-function setAttribute(element: Element, name: string, value: unknown): void {
-  if (value == null || value === false) {
+function setAttribute(element: Element, name: string, value: Option<VPropValue>): void {
+  if (!isSome(value) || value.value === false) {
     element.removeAttribute(name);
     return;
   }
-  element.setAttribute(name, value === true ? "" : String(value));
+  element.setAttribute(name, value.value === true ? "" : String(value.value));
 }
 
 function kebab(name: string): string {
   return name.startsWith("--")
     ? name
     : name.replace(/[A-Z]/g, (match) => `-${match.toLowerCase()}`);
+}
+
+function firstChildOption(parent: Element): Option<ChildNode> {
+  return childNode(parent.childNodes, 0);
+}
+
+function arrayItem<T>(values: T[], index: number): Option<T> {
+  if (index in values) return some(values[index] as T);
+  return none();
+}
+
+function childNode(nodes: NodeListOf<ChildNode>, index: number): Option<ChildNode> {
+  if (index in nodes) return some(nodes[index] as ChildNode);
+  return none();
+}
+
+function mapItem<K, V>(map: Map<K, V>, key: K): Option<V> {
+  if (map.has(key)) return some(map.get(key) as V);
+  return none();
+}
+
+function propValue(props: VProps, name: string): Option<VPropValue> {
+  if (Object.prototype.hasOwnProperty.call(props, name)) return some(props[name] as VPropValue);
+  return none();
+}
+
+function vnodeKey(node: VNode | string): Option<string> {
+  if (typeof node === "string") return none();
+  return node.key;
+}
+
+function propKey(props: VProps): Option<string> {
+  const key = propValue(props, "key");
+  if (isSome(key) && typeof key.value === "string") return some(key.value);
+  return none();
+}
+
+function optionStringSame(left: Option<string>, right: Option<string>): boolean {
+  if (!isSome(left) && !isSome(right)) return true;
+  return isSome(left) && isSome(right) && left.value === right.value;
 }

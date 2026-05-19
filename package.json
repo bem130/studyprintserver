@@ -4,9 +4,14 @@
   "type": "module",
   "scripts": {
     "build:frontend": "tsc -p tsconfig.json",
+    "generate:api-types": "cargo test export_typescript_api_bindings -- --ignored",
+    "check": "npm run test:frontend && cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test",
     "test:frontend": "npm run build:frontend && node --test frontend/tests/*.test.mjs"
   },
   "devDependencies": {
     "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "katex": "^0.16.47"
   }
 }

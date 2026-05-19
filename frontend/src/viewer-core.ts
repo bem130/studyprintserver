@@ -10,8 +10,20 @@ export const TONE_MODES = {
   ORIGINAL: "original",
 } as const;
 
+export const THEMES = {
+  LIGHT: "light",
+  DARK: "dark",
+} as const;
+
+export const TONE_BRIGHTNESS_MIN = -60;
+export const TONE_BRIGHTNESS_MAX = 60;
+export const TONE_CONTRAST_MIN = -60;
+export const TONE_CONTRAST_MAX = 100;
+export const AUTO_DARK_BRIGHTNESS_OFFSET = 12;
+
 export type FitMode = (typeof FIT_MODES)[keyof typeof FIT_MODES];
 export type ToneMode = (typeof TONE_MODES)[keyof typeof TONE_MODES];
+export type Theme = (typeof THEMES)[keyof typeof THEMES];
 
 export interface Size {
   width: number;
@@ -40,6 +52,13 @@ export interface ToneOptions {
   contrast: number;
 }
 
+export interface ToneState {
+  mode: ToneMode;
+  brightness: number;
+  contrast: number;
+  autoNormalize: boolean;
+}
+
 export interface LightnessRange {
   low: number;
   high: number;
@@ -57,26 +76,49 @@ export interface Rgb {
   b: number;
 }
 
-export function normalizeFitMode(mode: string | null): FitMode {
-  return mode === FIT_MODES.WIDTH || mode === FIT_MODES.HEIGHT
-    ? mode
-    : FIT_MODES.BOTH;
-}
-
-export function normalizeToneMode(mode: string | null): ToneMode {
-  return mode === TONE_MODES.INVERTED || mode === TONE_MODES.ORIGINAL
-    ? mode
-    : TONE_MODES.AUTO;
-}
-
 export function nextToneMode(mode: ToneMode): ToneMode {
   if (mode === TONE_MODES.AUTO) return TONE_MODES.INVERTED;
   if (mode === TONE_MODES.INVERTED) return TONE_MODES.ORIGINAL;
   return TONE_MODES.AUTO;
 }
 
-export function toneIsInverted(mode: ToneMode, theme: string): boolean {
-  return mode === TONE_MODES.INVERTED || (mode === TONE_MODES.AUTO && theme === "dark");
+export function nextTheme(theme: Theme): Theme {
+  return theme === THEMES.DARK ? THEMES.LIGHT : THEMES.DARK;
+}
+
+export function normalizeToneBrightness(value: number): number {
+  return normalizeBoundedNumber(value, TONE_BRIGHTNESS_MIN, TONE_BRIGHTNESS_MAX, 0);
+}
+
+export function normalizeToneContrast(value: number): number {
+  return normalizeBoundedNumber(value, TONE_CONTRAST_MIN, TONE_CONTRAST_MAX, 0);
+}
+
+export function toneIsInverted(mode: ToneMode, theme: Theme): boolean {
+  return mode === TONE_MODES.INVERTED || (mode === TONE_MODES.AUTO && theme === THEMES.DARK);
+}
+
+export function toneOptions(tone: ToneState, theme: Theme): ToneOptions {
+  return {
+    inverted: toneIsInverted(tone.mode, theme),
+    autoNormalize: tone.autoNormalize,
+    brightness: effectiveToneBrightness(tone, theme),
+    contrast: tone.contrast,
+  };
+}
+
+export function toneRequiresCanvas(tone: ToneState, theme: Theme): boolean {
+  const options = toneOptions(tone, theme);
+  return (
+    options.inverted ||
+    options.autoNormalize ||
+    options.brightness !== 0 ||
+    options.contrast !== 0
+  );
+}
+
+export function toneHasAdjustments(tone: ToneState): boolean {
+  return tone.brightness !== 0 || tone.contrast !== 0 || tone.autoNormalize;
 }
 
 export function fitScale(mode: FitMode, box: Size, bounds: Size): number {
@@ -138,7 +180,7 @@ export function percentileLightness(
   const threshold = Math.max(1, Math.ceil(totalPixels * percentile));
   let cumulative = 0;
   for (let i = 0; i < histogram.length; i += 1) {
-    cumulative += histogram[i] ?? 0;
+    cumulative += histogramNumber(histogram, i);
     if (cumulative >= threshold) {
       return i / Math.max(1, histogram.length - 1);
     }
@@ -195,6 +237,25 @@ export function oklabToDisplaySrgb(l: number, a: number, b: number): Rgb {
 
 export function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
+}
+
+function normalizeBoundedNumber(
+  value: number,
+  min: number,
+  max: number,
+  fallback: number,
+): number {
+  return Number.isFinite(value) ? clamp(value, min, max) : fallback;
+}
+
+function effectiveToneBrightness(tone: ToneState, theme: Theme): number {
+  const offset =
+    tone.mode === TONE_MODES.AUTO && theme === THEMES.DARK ? AUTO_DARK_BRIGHTNESS_OFFSET : 0;
+  return clamp(tone.brightness + offset, TONE_BRIGHTNESS_MIN, TONE_BRIGHTNESS_MAX);
+}
+
+function histogramNumber(histogram: ArrayLike<number>, index: number): number {
+  return histogram[index] as number;
 }
 
 function oklabToLinearSrgb(l: number, a: number, b: number): Rgb {

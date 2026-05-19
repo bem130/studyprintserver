@@ -4,11 +4,11 @@ use anyhow::{Context, Result};
 use axum::extract::{Path as AxumPath, State};
 use axum::http::header::CONTENT_TYPE;
 use axum::http::{HeaderValue, StatusCode};
-use axum::response::{Html, IntoResponse, Response};
+use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::net::SocketAddr;
@@ -18,21 +18,20 @@ use tokio::net::TcpListener;
 
 const DEFAULT_INDEX_DIR: &str = r"C:\data\studyprintdata\index";
 const DEFAULT_LIBRARY_DIR: &str = r"C:\data\studyprintdata\library";
+const DEFAULT_STATIC_DIR: &str = "static";
 const DEFAULT_BIND: &str = "127.0.0.1:7878";
 
 #[derive(Clone)]
 struct AppState {
     data: Arc<AppData>,
     library_dir: Arc<PathBuf>,
+    static_dir: Arc<PathBuf>,
 }
 
-#[cfg_attr(test, derive(ts_rs::TS))]
 #[derive(Debug, Serialize)]
 struct AppData {
     items: Vec<StudyPrintItem>,
-    fields: Vec<FieldSummary>,
-    dates: Vec<String>,
-    stats: Stats,
+    print_count: usize,
 }
 
 #[cfg_attr(test, derive(ts_rs::TS))]
@@ -40,35 +39,14 @@ struct AppData {
 struct StudyPrintItem {
     global_content_id: String,
     print_id: String,
-    content_id: String,
     title: String,
     logical_date: String,
-    primary_field_ref: String,
     primary_field_path: String,
     tags: Vec<String>,
-    image_path: String,
     image_url: String,
-    xml_path: String,
+    xml_url: String,
+    xml_text: String,
     text: String,
-    transcription: Option<String>,
-    formula_count: usize,
-}
-
-#[cfg_attr(test, derive(ts_rs::TS))]
-#[derive(Debug, Clone, Serialize)]
-struct FieldSummary {
-    ref_id: String,
-    path: String,
-    count: usize,
-}
-
-#[cfg_attr(test, derive(ts_rs::TS))]
-#[derive(Debug, Serialize)]
-struct Stats {
-    print_count: usize,
-    content_count: usize,
-    field_count: usize,
-    date_count: usize,
     formula_count: usize,
 }
 
@@ -81,11 +59,9 @@ struct PrintRecord {
 
 #[derive(Debug, Deserialize)]
 struct ContentRecord {
-    content_id: String,
     global_content_id: String,
     logical_date: String,
     primary_field_path: String,
-    primary_field_ref: String,
     print_id: String,
     tags: Vec<String>,
     title: String,
@@ -96,7 +72,6 @@ struct BodyVariantRecord {
     global_content_id: String,
     preferred_for_index: bool,
     text: String,
-    transcription: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -116,27 +91,25 @@ struct Health {
 async fn main() -> Result<()> {
     let index_dir = env_path("STUDYPRINT_INDEX_DIR", DEFAULT_INDEX_DIR);
     let library_dir = env_path("STUDYPRINT_LIBRARY_DIR", DEFAULT_LIBRARY_DIR);
+    let static_dir = env_path("STUDYPRINT_STATIC_DIR", DEFAULT_STATIC_DIR);
     let bind = env::var("STUDYPRINT_BIND").unwrap_or_else(|_| DEFAULT_BIND.to_string());
     let addr: SocketAddr = bind
         .parse()
         .with_context(|| format!("invalid STUDYPRINT_BIND value: {bind}"))?;
 
-    let data = Arc::new(load_data(&index_dir).context("failed to load StudyPrint index")?);
+    let data =
+        Arc::new(load_data(&index_dir, &library_dir).context("failed to load StudyPrint index")?);
     let state = AppState {
         data,
         library_dir: Arc::new(library_dir),
+        static_dir: Arc::new(static_dir),
     };
 
     let app = Router::new()
         .route("/", get(index_html))
-        .route("/assets/app.css", get(app_css))
-        .route("/assets/app.js", get(app_js))
-        .route("/assets/viewer-core.js", get(viewer_core_js))
-        .route("/assets/ui-state.js", get(ui_state_js))
-        .route("/assets/vdom.js", get(vdom_js))
+        .route("/assets/{*path}", get(static_asset))
         .route("/api/health", get(api_health))
         .route("/api/contents", get(api_contents))
-        .route("/api/fields", get(api_fields))
         .route("/library/{*path}", get(library_file))
         .with_state(state);
 
@@ -154,47 +127,24 @@ fn env_path(name: &str, default: &str) -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(default))
 }
 
-async fn index_html() -> Html<&'static str> {
-    Html(include_str!("../static/index.html"))
+async fn index_html(State(state): State<AppState>) -> Result<Response, StaticFileError> {
+    static_file_response(&state.static_dir, "index.html", StaticContentKind::Html).await
 }
 
-async fn app_css() -> Response {
-    with_content_type(include_str!("../static/app.css"), "text/css; charset=utf-8")
-}
-
-async fn app_js() -> Response {
-    with_content_type(
-        include_str!("../static/app.js"),
-        "application/javascript; charset=utf-8",
-    )
-}
-
-async fn viewer_core_js() -> Response {
-    with_content_type(
-        include_str!("../static/viewer-core.js"),
-        "application/javascript; charset=utf-8",
-    )
-}
-
-async fn ui_state_js() -> Response {
-    with_content_type(
-        include_str!("../static/ui-state.js"),
-        "application/javascript; charset=utf-8",
-    )
-}
-
-async fn vdom_js() -> Response {
-    with_content_type(
-        include_str!("../static/vdom.js"),
-        "application/javascript; charset=utf-8",
-    )
+async fn static_asset(
+    State(state): State<AppState>,
+    AxumPath(path): AxumPath<String>,
+) -> Result<Response, StaticFileError> {
+    validate_static_file_path(&path)?;
+    let kind = static_content_kind(&path)?;
+    static_file_response(&state.static_dir, &path, kind).await
 }
 
 async fn api_health(State(state): State<AppState>) -> Json<Health> {
     Json(Health {
         ok: true,
-        prints: state.data.stats.print_count,
-        contents: state.data.stats.content_count,
+        prints: state.data.print_count,
+        contents: state.data.items.len(),
     })
 }
 
@@ -202,40 +152,163 @@ async fn api_contents(State(state): State<AppState>) -> Json<Vec<StudyPrintItem>
     Json(state.data.items.clone())
 }
 
-async fn api_fields(State(state): State<AppState>) -> Json<Vec<FieldSummary>> {
-    Json(state.data.fields.clone())
-}
-
 async fn library_file(
     State(state): State<AppState>,
     AxumPath(path): AxumPath<String>,
-) -> Result<Response, StatusCode> {
-    if !is_safe_relative_path(&path) || !path.ends_with(".png") {
-        return Err(StatusCode::BAD_REQUEST);
-    }
+) -> Result<Response, LibraryFileError> {
+    validate_library_file_path(&path)?;
+    let kind = library_content_kind(&path)?;
 
     let file_path = state
         .library_dir
         .join(path.replace('/', std::path::MAIN_SEPARATOR_STR));
     let bytes = tokio::fs::read(file_path)
         .await
-        .map_err(|_| StatusCode::NOT_FOUND)?;
+        .map_err(|_| LibraryFileError::NotFound)?;
     let mut response = bytes.into_response();
     response
         .headers_mut()
-        .insert(CONTENT_TYPE, HeaderValue::from_static("image/png"));
+        .insert(CONTENT_TYPE, HeaderValue::from_static(kind.content_type()));
     Ok(response)
 }
 
-fn with_content_type(text: &'static str, content_type: &'static str) -> Response {
-    let mut response = text.into_response();
-    response
-        .headers_mut()
-        .insert(CONTENT_TYPE, HeaderValue::from_static(content_type));
-    response
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum LibraryFileError {
+    InvalidPath,
+    UnsupportedExtension,
+    NotFound,
 }
 
-fn load_data(index_dir: &Path) -> Result<AppData> {
+impl IntoResponse for LibraryFileError {
+    fn into_response(self) -> Response {
+        match self {
+            Self::InvalidPath | Self::UnsupportedExtension => StatusCode::BAD_REQUEST,
+            Self::NotFound => StatusCode::NOT_FOUND,
+        }
+        .into_response()
+    }
+}
+
+fn validate_library_file_path(path: &str) -> Result<(), LibraryFileError> {
+    if !is_safe_relative_path(path) {
+        return Err(LibraryFileError::InvalidPath);
+    }
+    library_content_kind(path)?;
+    Ok(())
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum LibraryContentKind {
+    Png,
+    Xml,
+}
+
+impl LibraryContentKind {
+    fn content_type(self) -> &'static str {
+        match self {
+            Self::Png => "image/png",
+            Self::Xml => "application/xml; charset=utf-8",
+        }
+    }
+}
+
+fn library_content_kind(path: &str) -> Result<LibraryContentKind, LibraryFileError> {
+    if path.ends_with(".png") {
+        return Ok(LibraryContentKind::Png);
+    }
+    if path.ends_with(".xml") {
+        return Ok(LibraryContentKind::Xml);
+    }
+    Err(LibraryFileError::UnsupportedExtension)
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum StaticFileError {
+    InvalidPath,
+    UnsupportedExtension,
+    NotFound,
+}
+
+impl IntoResponse for StaticFileError {
+    fn into_response(self) -> Response {
+        match self {
+            Self::InvalidPath | Self::UnsupportedExtension => StatusCode::BAD_REQUEST,
+            Self::NotFound => StatusCode::NOT_FOUND,
+        }
+        .into_response()
+    }
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum StaticContentKind {
+    Html,
+    Css,
+    JavaScript,
+    Woff2,
+    Woff,
+    Ttf,
+}
+
+impl StaticContentKind {
+    fn content_type(self) -> &'static str {
+        match self {
+            Self::Html => "text/html; charset=utf-8",
+            Self::Css => "text/css; charset=utf-8",
+            Self::JavaScript => "application/javascript; charset=utf-8",
+            Self::Woff2 => "font/woff2",
+            Self::Woff => "font/woff",
+            Self::Ttf => "font/ttf",
+        }
+    }
+}
+
+async fn static_file_response(
+    static_dir: &Path,
+    path: &str,
+    kind: StaticContentKind,
+) -> Result<Response, StaticFileError> {
+    let file_path = static_dir.join(path.replace('/', std::path::MAIN_SEPARATOR_STR));
+    let bytes = tokio::fs::read(file_path)
+        .await
+        .map_err(|_| StaticFileError::NotFound)?;
+    let mut response = bytes.into_response();
+    response
+        .headers_mut()
+        .insert(CONTENT_TYPE, HeaderValue::from_static(kind.content_type()));
+    Ok(response)
+}
+
+fn validate_static_file_path(path: &str) -> Result<(), StaticFileError> {
+    if !is_safe_relative_path(path) {
+        return Err(StaticFileError::InvalidPath);
+    }
+    static_content_kind(path)?;
+    Ok(())
+}
+
+fn static_content_kind(path: &str) -> Result<StaticContentKind, StaticFileError> {
+    if path == "index.html" {
+        return Ok(StaticContentKind::Html);
+    }
+    if path.ends_with(".css") {
+        return Ok(StaticContentKind::Css);
+    }
+    if path.ends_with(".js") || path.ends_with(".mjs") {
+        return Ok(StaticContentKind::JavaScript);
+    }
+    if path.ends_with(".woff2") {
+        return Ok(StaticContentKind::Woff2);
+    }
+    if path.ends_with(".woff") {
+        return Ok(StaticContentKind::Woff);
+    }
+    if path.ends_with(".ttf") {
+        return Ok(StaticContentKind::Ttf);
+    }
+    Err(StaticFileError::UnsupportedExtension)
+}
+
+fn load_data(index_dir: &Path, library_dir: &Path) -> Result<AppData> {
     let prints: Vec<PrintRecord> = read_jsonl(&index_dir.join("prints.jsonl"))?;
     let contents: Vec<ContentRecord> = read_jsonl(&index_dir.join("contents.jsonl"))?;
     let bodies: Vec<BodyVariantRecord> = read_jsonl(&index_dir.join("body_variants.jsonl"))?;
@@ -259,38 +332,35 @@ fn load_data(index_dir: &Path) -> Result<AppData> {
     }
 
     let mut items = Vec::new();
-    let mut field_counts: BTreeMap<(String, String), usize> = BTreeMap::new();
-    let mut dates = BTreeSet::new();
-
     for content in contents {
         let print = print_by_id
             .get(content.print_id.as_str())
             .with_context(|| format!("content references missing print: {}", content.print_id))?;
-        let body = body_by_content.get(content.global_content_id.as_str());
+        let body = body_by_content
+            .get(content.global_content_id.as_str())
+            .with_context(|| {
+                format!(
+                    "content references missing preferred body: {}",
+                    content.global_content_id
+                )
+            })?;
         let image_url = format!("/library/{}", content_safe_url_path(&print.image_path)?);
-
-        *field_counts
-            .entry((
-                content.primary_field_ref.clone(),
-                content.primary_field_path.clone(),
-            ))
-            .or_default() += 1;
-        dates.insert(content.logical_date.clone());
+        let safe_xml_path = content_safe_url_path(&print.xml_path)?;
+        let xml_url = format!("/library/{safe_xml_path}");
+        let xml_text = read_library_text(library_dir, &safe_xml_path)?;
+        let text = body_list_text_from_xml(&xml_text).unwrap_or_else(|| body.text.clone());
 
         items.push(StudyPrintItem {
             global_content_id: content.global_content_id.clone(),
             print_id: content.print_id,
-            content_id: content.content_id,
             title: content.title,
             logical_date: content.logical_date,
-            primary_field_ref: content.primary_field_ref,
             primary_field_path: content.primary_field_path,
             tags: content.tags,
-            image_path: print.image_path.clone(),
             image_url,
-            xml_path: print.xml_path.clone(),
-            text: body.map(|record| record.text.clone()).unwrap_or_default(),
-            transcription: body.and_then(|record| record.transcription.clone()),
+            xml_url,
+            xml_text,
+            text,
             formula_count: *formula_counts
                 .get(content.global_content_id.as_str())
                 .unwrap_or(&0),
@@ -301,32 +371,98 @@ fn load_data(index_dir: &Path) -> Result<AppData> {
         a.logical_date
             .cmp(&b.logical_date)
             .then_with(|| a.print_id.cmp(&b.print_id))
-            .then_with(|| a.content_id.cmp(&b.content_id))
+            .then_with(|| a.global_content_id.cmp(&b.global_content_id))
     });
-
-    let fields = field_counts
-        .into_iter()
-        .map(|((ref_id, path), count)| FieldSummary {
-            ref_id,
-            path,
-            count,
-        })
-        .collect::<Vec<_>>();
-    let dates = dates.into_iter().collect::<Vec<_>>();
-    let stats = Stats {
-        print_count: prints.len(),
-        content_count: items.len(),
-        field_count: fields.len(),
-        date_count: dates.len(),
-        formula_count: formulas.len(),
-    };
 
     Ok(AppData {
         items,
-        fields,
-        dates,
-        stats,
+        print_count: prints.len(),
     })
+}
+
+fn body_list_text_from_xml(xml_text: &str) -> Option<String> {
+    let document = roxmltree::Document::parse(xml_text).ok()?;
+    let body = document
+        .descendants()
+        .find(|node| node.is_element() && node.tag_name().name() == "body_original")?;
+
+    let mut parts = Vec::new();
+    collect_list_text(body, &mut parts);
+    non_empty_normalized(&parts.join(" "))
+}
+
+fn collect_list_text(node: roxmltree::Node<'_, '_>, parts: &mut Vec<String>) {
+    if node.is_text() {
+        push_normalized_part(parts, node.text().unwrap_or_default());
+        return;
+    }
+
+    if !node.is_element() {
+        return;
+    }
+
+    match node.tag_name().name() {
+        "tex" | "altText" => {}
+        "formula" => {
+            if push_direct_child_text(node, "altText", parts) {
+                return;
+            }
+            let _ = push_direct_child_text(node, "tex", parts);
+        }
+        _ => {
+            for child in node.children() {
+                collect_list_text(child, parts);
+            }
+        }
+    }
+}
+
+fn push_direct_child_text(
+    node: roxmltree::Node<'_, '_>,
+    child_name: &str,
+    parts: &mut Vec<String>,
+) -> bool {
+    let Some(child) = node
+        .children()
+        .find(|candidate| candidate.is_element() && candidate.tag_name().name() == child_name)
+    else {
+        return false;
+    };
+    let text = text_descendants(child);
+    let Some(text) = non_empty_normalized(&text) else {
+        return false;
+    };
+    parts.push(text);
+    true
+}
+
+fn text_descendants(node: roxmltree::Node<'_, '_>) -> String {
+    let mut text = String::new();
+    for descendant in node.descendants().filter(|candidate| candidate.is_text()) {
+        text.push_str(descendant.text().unwrap_or_default());
+        text.push(' ');
+    }
+    text
+}
+
+fn push_normalized_part(parts: &mut Vec<String>, text: &str) {
+    if let Some(text) = non_empty_normalized(text) {
+        parts.push(text);
+    }
+}
+
+fn non_empty_normalized(text: &str) -> Option<String> {
+    let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if normalized.is_empty() {
+        None
+    } else {
+        Some(normalized)
+    }
+}
+
+fn read_library_text(library_dir: &Path, path: &str) -> Result<String> {
+    fs::read_to_string(library_dir.join(path.replace('/', std::path::MAIN_SEPARATOR_STR)))
+        .with_context(|| format!("failed to read library text file: {path}"))
 }
 
 fn read_jsonl<T: DeserializeOwned>(path: &Path) -> Result<Vec<T>> {
@@ -383,31 +519,144 @@ mod tests {
     }
 
     #[test]
-    fn export_typescript_api_bindings() {
-        let cfg = Config::new();
-        let output = Path::new(env!("CARGO_MANIFEST_DIR"))
+    fn validates_library_png_paths_with_typed_errors() {
+        assert_eq!(
+            validate_library_file_path("2026/05/18/x.txt"),
+            Err(LibraryFileError::UnsupportedExtension)
+        );
+        assert_eq!(
+            validate_library_file_path("../x.png"),
+            Err(LibraryFileError::InvalidPath)
+        );
+        assert_eq!(validate_library_file_path("2026/05/18/x.png"), Ok(()));
+        assert_eq!(validate_library_file_path("2026/05/18/x.xml"), Ok(()));
+        assert_eq!(
+            library_content_kind("2026/05/18/x.xml"),
+            Ok(LibraryContentKind::Xml)
+        );
+    }
+
+    #[test]
+    fn validates_static_asset_paths_with_typed_errors() {
+        assert_eq!(
+            validate_static_file_path("../app.js"),
+            Err(StaticFileError::InvalidPath)
+        );
+        assert_eq!(
+            validate_static_file_path("app.png"),
+            Err(StaticFileError::UnsupportedExtension)
+        );
+        assert_eq!(validate_static_file_path("app.js"), Ok(()));
+        assert_eq!(validate_static_file_path("vendor/katex.mjs"), Ok(()));
+        assert_eq!(
+            validate_static_file_path("vendor/fonts/katex.woff2"),
+            Ok(())
+        );
+        assert_eq!(static_content_kind("app.css"), Ok(StaticContentKind::Css));
+    }
+
+    #[test]
+    fn list_text_prefers_formula_alt_text_over_tex() {
+        let xml = r#"
+        <print xmlns="urn:slf:studyprint:0.5">
+          <body>
+            <contents>
+              <content id="c1" ordinal="1">
+                <body_versions>
+                  <body_original id="c1.bo1">
+                    <section>
+                      <title>基本</title>
+                      <formula display="block">
+                        <tex><![CDATA[\frac{a}{b}]]></tex>
+                        <altText>a/b</altText>
+                      </formula>
+                      <p><t>終わり</t></p>
+                    </section>
+                  </body_original>
+                </body_versions>
+              </content>
+            </contents>
+          </body>
+        </print>
+        "#;
+
+        let text = body_list_text_from_xml(xml).expect("list text");
+
+        assert_eq!(text, "基本 a/b 終わり");
+        assert!(!text.contains("\\frac"));
+    }
+
+    #[test]
+    fn list_text_falls_back_to_tex_when_formula_alt_text_is_missing() {
+        let xml = r#"
+        <print xmlns="urn:slf:studyprint:0.5">
+          <body>
+            <contents>
+              <content id="c1" ordinal="1">
+                <body_versions>
+                  <body_original id="c1.bo1">
+                    <formula display="inline">
+                      <tex><![CDATA[x^2+y^2]]></tex>
+                    </formula>
+                  </body_original>
+                </body_versions>
+              </content>
+            </contents>
+          </body>
+        </print>
+        "#;
+
+        let text = body_list_text_from_xml(xml).expect("list text");
+
+        assert_eq!(text, "x^2+y^2");
+    }
+
+    #[test]
+    fn generated_typescript_api_bindings_are_current() -> Result<(), Box<dyn std::error::Error>> {
+        let expected = typescript_api_bindings()?;
+        let actual = fs::read_to_string(generated_api_types_path())?;
+        assert_eq!(actual, expected);
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "writes generated TypeScript API bindings"]
+    fn export_typescript_api_bindings() -> Result<(), Box<dyn std::error::Error>> {
+        let output = generated_api_types_path();
+        let output_dir = output.parent().ok_or_else(|| {
+            std::io::Error::other("generated TypeScript output path has no parent")
+        })?;
+        fs::create_dir_all(output_dir)?;
+        fs::write(output, typescript_api_bindings()?)?;
+        Ok(())
+    }
+
+    fn generated_api_types_path() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("frontend")
             .join("src")
             .join("generated")
-            .join("api-types.ts");
-        fs::create_dir_all(output.parent().expect("generated dir exists")).unwrap();
-
-        let mut text = String::from(
-            "// This file is generated from Rust API DTOs by `cargo test export_typescript_api_bindings`.\n",
-        );
-        text.push_str("// Do not edit this file manually.\n\n");
-        append_binding::<StudyPrintItem>(&cfg, &mut text);
-        append_binding::<FieldSummary>(&cfg, &mut text);
-        append_binding::<Health>(&cfg, &mut text);
-        text.push_str("export type ContentsResponse = StudyPrintItem[];\n");
-        text.push_str("export type FieldsResponse = FieldSummary[];\n");
-        text.push_str("export type HealthResponse = Health;\n");
-
-        fs::write(output, text).unwrap();
+            .join("api-types.ts")
     }
 
-    fn append_binding<T: TS + 'static>(cfg: &Config, output: &mut String) {
-        let binding = T::export_to_string(cfg).unwrap();
+    fn typescript_api_bindings() -> Result<String, ts_rs::ExportError> {
+        let cfg = Config::new();
+        let mut text = String::from(
+            "// This file is generated from Rust API DTOs by `npm run generate:api-types`.\n",
+        );
+        text.push_str("// Do not edit this file manually.\n\n");
+        append_binding::<StudyPrintItem>(&cfg, &mut text)?;
+        append_binding::<Health>(&cfg, &mut text)?;
+        text.push_str("export type ContentsResponse = StudyPrintItem[];\n");
+        text.push_str("export type HealthResponse = Health;\n");
+        Ok(text)
+    }
+
+    fn append_binding<T: TS + 'static>(
+        cfg: &Config,
+        output: &mut String,
+    ) -> Result<(), ts_rs::ExportError> {
+        let binding = T::export_to_string(cfg)?;
         for line in binding.lines() {
             if !line.starts_with("// This file was generated") && !line.trim().is_empty() {
                 output.push_str(line);
@@ -415,5 +664,6 @@ mod tests {
             }
         }
         output.push('\n');
+        Ok(())
     }
 }

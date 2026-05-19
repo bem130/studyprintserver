@@ -8,16 +8,15 @@ export const TONE_MODES = {
     INVERTED: "inverted",
     ORIGINAL: "original",
 };
-export function normalizeFitMode(mode) {
-    return mode === FIT_MODES.WIDTH || mode === FIT_MODES.HEIGHT
-        ? mode
-        : FIT_MODES.BOTH;
-}
-export function normalizeToneMode(mode) {
-    return mode === TONE_MODES.INVERTED || mode === TONE_MODES.ORIGINAL
-        ? mode
-        : TONE_MODES.AUTO;
-}
+export const THEMES = {
+    LIGHT: "light",
+    DARK: "dark",
+};
+export const TONE_BRIGHTNESS_MIN = -60;
+export const TONE_BRIGHTNESS_MAX = 60;
+export const TONE_CONTRAST_MIN = -60;
+export const TONE_CONTRAST_MAX = 100;
+export const AUTO_DARK_BRIGHTNESS_OFFSET = 12;
 export function nextToneMode(mode) {
     if (mode === TONE_MODES.AUTO)
         return TONE_MODES.INVERTED;
@@ -25,8 +24,35 @@ export function nextToneMode(mode) {
         return TONE_MODES.ORIGINAL;
     return TONE_MODES.AUTO;
 }
+export function nextTheme(theme) {
+    return theme === THEMES.DARK ? THEMES.LIGHT : THEMES.DARK;
+}
+export function normalizeToneBrightness(value) {
+    return normalizeBoundedNumber(value, TONE_BRIGHTNESS_MIN, TONE_BRIGHTNESS_MAX, 0);
+}
+export function normalizeToneContrast(value) {
+    return normalizeBoundedNumber(value, TONE_CONTRAST_MIN, TONE_CONTRAST_MAX, 0);
+}
 export function toneIsInverted(mode, theme) {
-    return mode === TONE_MODES.INVERTED || (mode === TONE_MODES.AUTO && theme === "dark");
+    return mode === TONE_MODES.INVERTED || (mode === TONE_MODES.AUTO && theme === THEMES.DARK);
+}
+export function toneOptions(tone, theme) {
+    return {
+        inverted: toneIsInverted(tone.mode, theme),
+        autoNormalize: tone.autoNormalize,
+        brightness: effectiveToneBrightness(tone, theme),
+        contrast: tone.contrast,
+    };
+}
+export function toneRequiresCanvas(tone, theme) {
+    const options = toneOptions(tone, theme);
+    return (options.inverted ||
+        options.autoNormalize ||
+        options.brightness !== 0 ||
+        options.contrast !== 0);
+}
+export function toneHasAdjustments(tone) {
+    return tone.brightness !== 0 || tone.contrast !== 0 || tone.autoNormalize;
 }
 export function fitScale(mode, box, bounds) {
     const safeBoxW = Math.max(1, box.width);
@@ -77,7 +103,7 @@ export function percentileLightness(histogram, totalPixels, percentile) {
     const threshold = Math.max(1, Math.ceil(totalPixels * percentile));
     let cumulative = 0;
     for (let i = 0; i < histogram.length; i += 1) {
-        cumulative += histogram[i] ?? 0;
+        cumulative += histogramNumber(histogram, i);
         if (cumulative >= threshold) {
             return i / Math.max(1, histogram.length - 1);
         }
@@ -125,6 +151,16 @@ export function oklabToDisplaySrgb(l, a, b) {
 }
 export function clamp(value, min, max) {
     return Math.min(max, Math.max(min, value));
+}
+function normalizeBoundedNumber(value, min, max, fallback) {
+    return Number.isFinite(value) ? clamp(value, min, max) : fallback;
+}
+function effectiveToneBrightness(tone, theme) {
+    const offset = tone.mode === TONE_MODES.AUTO && theme === THEMES.DARK ? AUTO_DARK_BRIGHTNESS_OFFSET : 0;
+    return clamp(tone.brightness + offset, TONE_BRIGHTNESS_MIN, TONE_BRIGHTNESS_MAX);
+}
+function histogramNumber(histogram, index) {
+    return histogram[index];
 }
 function oklabToLinearSrgb(l, a, b) {
     const lPrime = l + 0.3963377774 * a + 0.2158037573 * b;

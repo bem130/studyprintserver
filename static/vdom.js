@@ -1,13 +1,12 @@
+import { isSome, none, optionMap, optionValueOr, some } from "./option.js";
 const listeners = new WeakMap();
 export function h(tag, props = {}, ...children) {
     const node = {
         tag,
         props,
         children: normalizeChildren(children),
+        key: propKey(props),
     };
-    if (typeof props.key === "string") {
-        node.key = props.key;
-    }
     return node;
 }
 export function mount(parent, node) {
@@ -15,10 +14,11 @@ export function mount(parent, node) {
     return node;
 }
 export function patch(parent, oldNode, newNode) {
-    if (!oldNode || !parent.firstChild) {
+    const firstChild = firstChildOption(parent);
+    if (!isSome(firstChild)) {
         return mount(parent, newNode);
     }
-    patchNode(parent, parent.firstChild, oldNode, newNode);
+    patchNode(parent, firstChild.value, oldNode, newNode);
     return newNode;
 }
 function normalizeChildren(children) {
@@ -27,7 +27,7 @@ function normalizeChildren(children) {
         if (Array.isArray(child)) {
             normalized.push(...normalizeChildren(child));
         }
-        else if (child != null && child !== false) {
+        else {
             normalized.push(typeof child === "object" ? child : String(child));
         }
     }
@@ -38,8 +38,10 @@ function createElement(node) {
         return document.createTextNode(node);
     }
     const element = document.createElement(node.tag);
-    for (const child of node.children) {
-        element.append(createElement(child));
+    if (!hasInnerHtml(node.props)) {
+        for (const child of node.children) {
+            element.append(createElement(child));
+        }
     }
     patchProps(element, {}, node.props);
     return element;
@@ -47,58 +49,84 @@ function createElement(node) {
 function patchNode(parent, domNode, oldNode, newNode) {
     if (typeof oldNode === "string" || typeof newNode === "string") {
         if (oldNode !== newNode) {
-            parent.replaceChild(createElement(newNode), domNode);
+            const replacement = createElement(newNode);
+            parent.replaceChild(replacement, domNode);
+            return replacement;
         }
-        return;
+        return domNode;
     }
-    if (oldNode.tag !== newNode.tag || oldNode.key !== newNode.key) {
-        parent.replaceChild(createElement(newNode), domNode);
-        return;
+    if (oldNode.tag !== newNode.tag || !optionStringSame(oldNode.key, newNode.key)) {
+        const replacement = createElement(newNode);
+        parent.replaceChild(replacement, domNode);
+        return replacement;
     }
     if (!(domNode instanceof Element)) {
-        parent.replaceChild(createElement(newNode), domNode);
-        return;
+        const replacement = createElement(newNode);
+        parent.replaceChild(replacement, domNode);
+        return replacement;
+    }
+    if (hasInnerHtml(oldNode.props) || hasInnerHtml(newNode.props)) {
+        patchProps(domNode, oldNode.props, newNode.props);
+        return domNode;
     }
     patchChildren(domNode, oldNode.children, newNode.children);
     patchProps(domNode, oldNode.props, newNode.props);
+    return domNode;
 }
 function patchChildren(parent, oldChildren, newChildren) {
     const oldKeyed = keyedChildren(oldChildren, parent.childNodes);
     const nextDomChildren = [];
     for (let index = 0; index < newChildren.length; index += 1) {
-        const newChild = newChildren[index];
-        if (newChild == null)
+        const newChild = arrayItem(newChildren, index);
+        if (!isSome(newChild))
             continue;
-        const key = typeof newChild === "string" ? undefined : newChild.key;
-        const keyed = key ? oldKeyed.get(key) : undefined;
-        const currentDom = keyed?.dom ?? parent.childNodes[index] ?? null;
-        const oldChild = keyed?.node ?? oldChildren[index];
-        if (!currentDom || oldChild == null) {
-            const created = createElement(newChild);
+        const key = vnodeKey(newChild.value);
+        const keyed = isSome(key)
+            ? mapItem(oldKeyed, key.value)
+            : none();
+        const currentDom = isSome(keyed)
+            ? some(keyed.value.dom)
+            : childNode(parent.childNodes, index);
+        const oldChild = isSome(keyed)
+            ? some(keyed.value.node)
+            : arrayItem(oldChildren, index);
+        if (!isSome(currentDom) || !isSome(oldChild)) {
+            const created = createElement(newChild.value);
             parent.append(created);
             nextDomChildren.push(created);
         }
         else {
-            patchNode(parent, currentDom, oldChild, newChild);
-            nextDomChildren.push(currentDom);
+            nextDomChildren.push(patchNode(parent, currentDom.value, oldChild.value, newChild.value));
         }
     }
     while (parent.childNodes.length > newChildren.length) {
-        parent.lastChild?.remove();
+        const extra = childNode(parent.childNodes, newChildren.length);
+        if (isSome(extra))
+            extra.value.remove();
+        else
+            return;
     }
     nextDomChildren.forEach((child, index) => {
         if (parent.childNodes[index] !== child) {
-            parent.insertBefore(child, parent.childNodes[index] ?? null);
+            const before = childNode(parent.childNodes, index);
+            insertChild(parent, child, before);
         }
     });
+}
+function insertChild(parent, child, before) {
+    if (isSome(before))
+        parent.insertBefore(child, before.value);
+    else
+        parent.append(child);
 }
 function keyedChildren(children, nodes) {
     const keyed = new Map();
     children.forEach((child, index) => {
-        if (typeof child !== "string" && child.key) {
-            const dom = nodes[index];
-            if (dom)
-                keyed.set(child.key, { node: child, dom });
+        const key = vnodeKey(child);
+        if (isSome(key)) {
+            const dom = childNode(nodes, index);
+            if (isSome(dom) && typeof child !== "string")
+                keyed.set(key.value, { node: child, dom: dom.value });
         }
     });
     return keyed;
@@ -108,36 +136,46 @@ function patchProps(element, oldProps, newProps) {
     for (const name of names) {
         if (name === "key")
             continue;
-        const oldValue = oldProps[name];
-        const newValue = newProps[name];
-        if (oldValue === newValue)
+        const oldValue = propValue(oldProps, name);
+        const newValue = propValue(newProps, name);
+        if (name === "innerHTML") {
+            setProp(element, name, oldValue, newValue);
+            continue;
+        }
+        if (optionSame(oldValue, newValue))
             continue;
         setProp(element, name, oldValue, newValue);
     }
 }
+function optionSame(left, right) {
+    if (!isSome(left) && !isSome(right))
+        return true;
+    return isSome(left) && isSome(right) && left.value === right.value;
+}
 function setProp(element, name, oldValue, newValue) {
-    if (name.startsWith("on") && typeof newValue !== "string") {
-        setListener(element, name.slice(2).toLowerCase(), oldValue, newValue);
-        return;
-    }
-    if (name === "className") {
-        setAttribute(element, "class", newValue);
+    if (name.startsWith("on")) {
+        setListener(element, name.slice(2).toLowerCase(), newValue);
         return;
     }
     if (name === "style") {
         setStyle(element, oldValue, newValue);
         return;
     }
+    if (name === "innerHTML") {
+        setInnerHtml(element, newValue);
+        return;
+    }
     if (name === "value" && "value" in element) {
-        const value = newValue == null ? "" : String(newValue);
+        const value = optionValueOr(optionMap(newValue, (value) => String(value)), "");
         if (element.value !== value) {
             element.value = value;
         }
         return;
     }
-    if ((name === "checked" || name === "disabled" || name === "selected") && name in element) {
-        element[name] = Boolean(newValue);
-        if (!newValue)
+    if (name === "disabled" && name in element) {
+        const enabled = isSome(newValue) && Boolean(newValue.value);
+        element.disabled = enabled;
+        if (!enabled)
             element.removeAttribute(name);
         else
             element.setAttribute(name, "");
@@ -145,7 +183,14 @@ function setProp(element, name, oldValue, newValue) {
     }
     setAttribute(element, name, newValue);
 }
-function setListener(element, eventName, oldValue, newValue) {
+function hasInnerHtml(props) {
+    const value = propValue(props, "innerHTML");
+    return isSome(value) && typeof value.value === "string";
+}
+function setInnerHtml(element, value) {
+    element.innerHTML = isSome(value) && typeof value.value === "string" ? value.value : "";
+}
+function setListener(element, eventName, newValue) {
     let elementListeners = listeners.get(element);
     if (!elementListeners) {
         elementListeners = new Map();
@@ -156,24 +201,20 @@ function setListener(element, eventName, oldValue, newValue) {
         element.removeEventListener(eventName, oldListener);
         elementListeners.delete(eventName);
     }
-    if (typeof newValue === "function") {
-        const listener = newValue;
+    if (isSome(newValue) && typeof newValue.value === "function") {
+        const listener = newValue.value;
         element.addEventListener(eventName, listener);
         elementListeners.set(eventName, listener);
     }
 }
 function setStyle(element, oldValue, newValue) {
-    if (typeof oldValue === "object" && oldValue) {
-        for (const key of Object.keys(oldValue)) {
+    if (isSome(oldValue) && typeof oldValue.value === "object" && oldValue.value) {
+        for (const key of Object.keys(oldValue.value)) {
             element.style.removeProperty(kebab(key));
         }
     }
-    if (typeof newValue === "string") {
-        element.setAttribute("style", newValue);
-        return;
-    }
-    if (typeof newValue === "object" && newValue) {
-        for (const [key, value] of Object.entries(newValue)) {
+    if (isSome(newValue) && typeof newValue.value === "object" && newValue.value) {
+        for (const [key, value] of Object.entries(newValue.value)) {
             element.style.setProperty(kebab(key), value);
         }
         return;
@@ -181,14 +222,53 @@ function setStyle(element, oldValue, newValue) {
     element.removeAttribute("style");
 }
 function setAttribute(element, name, value) {
-    if (value == null || value === false) {
+    if (!isSome(value) || value.value === false) {
         element.removeAttribute(name);
         return;
     }
-    element.setAttribute(name, value === true ? "" : String(value));
+    element.setAttribute(name, value.value === true ? "" : String(value.value));
 }
 function kebab(name) {
     return name.startsWith("--")
         ? name
         : name.replace(/[A-Z]/g, (match) => `-${match.toLowerCase()}`);
+}
+function firstChildOption(parent) {
+    return childNode(parent.childNodes, 0);
+}
+function arrayItem(values, index) {
+    if (index in values)
+        return some(values[index]);
+    return none();
+}
+function childNode(nodes, index) {
+    if (index in nodes)
+        return some(nodes[index]);
+    return none();
+}
+function mapItem(map, key) {
+    if (map.has(key))
+        return some(map.get(key));
+    return none();
+}
+function propValue(props, name) {
+    if (Object.prototype.hasOwnProperty.call(props, name))
+        return some(props[name]);
+    return none();
+}
+function vnodeKey(node) {
+    if (typeof node === "string")
+        return none();
+    return node.key;
+}
+function propKey(props) {
+    const key = propValue(props, "key");
+    if (isSome(key) && typeof key.value === "string")
+        return some(key.value);
+    return none();
+}
+function optionStringSame(left, right) {
+    if (!isSome(left) && !isSome(right))
+        return true;
+    return isSome(left) && isSome(right) && left.value === right.value;
 }

@@ -1,15 +1,20 @@
 import {
   FIT_MODES,
+  THEMES,
   TONE_MODES,
   clamp,
+  nextTheme,
   nextToneMode,
-  normalizeFitMode,
-  normalizeToneMode,
-  toneIsInverted,
+  normalizeToneBrightness,
+  normalizeToneContrast,
+  toneHasAdjustments,
+  toneRequiresCanvas,
   type FitMode,
   type Size,
-  type ToneMode,
+  type Theme,
+  type ToneState,
 } from "./viewer-core.js";
+import { isSome, none, optionMap, optionValueOr, some, type Option } from "./option.js";
 import type { StudyPrintItem } from "./generated/api-types.js";
 
 export type { StudyPrintItem };
@@ -20,67 +25,72 @@ export const ZOOM_STEP = 0.25;
 export const MIN_FILTERS_WIDTH = 180;
 export const MIN_RESULTS_WIDTH = 260;
 export const MIN_DETAIL_WIDTH = 360;
-export const MIN_PREVIEW_HEIGHT = 180;
-export const MIN_TEXT_HEIGHT = 120;
+export const MIN_PREVIEW_HEIGHT = 220;
+export const MIN_DETAIL_INFO_HEIGHT = 190;
 export const HANDLE_WIDTH_TOTAL = 14;
 
+export const FULLSCREEN_TOOLS = {
+  HOVER_READY: "hover_ready",
+  HOVER_OPEN: "hover_open",
+  PINNED: "pinned",
+  HIDDEN: "hidden",
+} as const;
+
+export type FullscreenToolsState = (typeof FULLSCREEN_TOOLS)[keyof typeof FULLSCREEN_TOOLS];
+
+export const FULLSCREEN_TARGETS = {
+  PREVIEW: "preview",
+  BODY: "body",
+} as const;
+
+export type FullscreenTarget = (typeof FULLSCREEN_TARGETS)[keyof typeof FULLSCREEN_TARGETS];
+
+export const DETAIL_TABS = {
+  BODY: "body",
+  XML_TREE: "xml_tree",
+  XML_RAW: "xml_raw",
+} as const;
+
+export type DetailTab = (typeof DETAIL_TABS)[keyof typeof DETAIL_TABS];
+
 export interface LayoutState {
-  filtersWidth: number | null;
-  resultsWidth: number | null;
-  previewHeight: number | null;
-  previewViewport: Size | null;
+  filtersWidth: Option<number>;
+  resultsWidth: Option<number>;
+  previewHeight: Option<number>;
+  previewViewport: Option<Size>;
 }
 
 export interface ImageState {
-  naturalSize: Size | null;
-  processedSize: Size | null;
+  naturalSize: Option<Size>;
   token: number;
-  processing: boolean;
 }
 
 export interface Model {
   items: StudyPrintItem[];
-  selectedId: string | null;
+  selectedId: Option<string>;
   status: string;
-  error: string | null;
   search: string;
-  field: string;
-  date: string;
-  tag: string;
-  theme: "light" | "dark";
-  imageTone: ToneMode;
+  field: Option<string>;
+  date: Option<string>;
+  tag: Option<string>;
+  theme: Theme;
+  tone: ToneState;
   fitMode: FitMode;
-  brightness: number;
-  contrast: number;
-  autoNormalize: boolean;
   rotation: number;
   zoom: number;
-  fullscreen: boolean;
-  fullscreenToolsPinned: boolean;
-  fullscreenToolsHidden: boolean;
+  fullscreen: Option<FullscreenTarget>;
+  fullscreenTools: FullscreenToolsState;
+  detailTab: DetailTab;
+  collapsedXmlPaths: string[];
   layout: LayoutState;
   image: ImageState;
-}
-
-export interface StoredSettings {
-  theme: string | null;
-  imageTone: string | null;
-  fitMode: string | null;
-  brightness: number | null;
-  contrast: number | null;
-  autoNormalize: boolean;
-  filtersWidth: number | null;
-  resultsWidth: number | null;
-  previewHeight: number | null;
 }
 
 export interface LayoutMetrics {
   workspaceWidth: number;
   detailHeight: number;
   detailHeadHeight: number;
-  detailTagsHeight: number;
   previewViewport: Size;
-  verticalHandlesVisible: boolean;
 }
 
 export type ResizeTarget = "filters" | "results" | "preview";
@@ -89,10 +99,10 @@ export type Msg =
   | { type: "ContentsLoaded"; items: StudyPrintItem[] }
   | { type: "ContentsFailed"; message: string }
   | { type: "SearchChanged"; value: string }
-  | { type: "FieldChanged"; value: string }
-  | { type: "DateChanged"; value: string }
+  | { type: "FieldChanged"; value: Option<string> }
+  | { type: "DateChanged"; value: Option<string> }
   | { type: "TagToggled"; tag: string }
-  | { type: "SelectItem"; id: string | null }
+  | { type: "SelectItem"; id: Option<string> }
   | { type: "ToggleTheme" }
   | { type: "CycleTone" }
   | { type: "ToggleNormalize" }
@@ -102,64 +112,61 @@ export type Msg =
   | { type: "RotateBy"; degrees: number }
   | { type: "ZoomBy"; delta: number }
   | { type: "SetFitMode"; mode: FitMode }
+  | { type: "SetDetailTab"; tab: DetailTab }
+  | { type: "ToggleXmlNode"; path: string }
   | { type: "ResetView" }
   | { type: "ImageLoaded"; size: Size }
-  | { type: "ImageProcessingStarted"; token: number }
-  | { type: "ImageProcessed"; token: number; size: Size }
-  | { type: "ImageProcessingCleared"; token: number }
   | { type: "LayoutMeasured"; metrics: LayoutMetrics }
   | { type: "ResizePanel"; target: ResizeTarget; value: number; metrics: LayoutMetrics }
-  | { type: "FullscreenChanged"; active: boolean }
+  | { type: "FullscreenChanged"; target: Option<FullscreenTarget> }
+  | { type: "FullscreenToolsPointerEntered" }
+  | { type: "FullscreenToolsPointerLeft" }
   | { type: "ToggleFullscreenTools" }
   | { type: "HideFullscreenTools" }
   | { type: "ToggleFullscreenToolsPin" }
-  | { type: "RequestFullscreenToggle" };
+  | { type: "RequestFullscreenToggle"; target: FullscreenTarget };
 
 export type Cmd =
   | { type: "LoadContents" }
   | { type: "MeasureLayout" }
-  | { type: "ApplyTheme"; theme: "light" | "dark" }
-  | { type: "Persist"; key: string; value: string }
-  | { type: "RemovePersisted"; key: string }
-  | { type: "ProcessImage"; token: number }
-  | { type: "ScheduleProcessImage"; token: number }
-  | { type: "ToggleFullscreen" };
+  | { type: "SyncImageProcessing"; token: number }
+  | { type: "ToggleFullscreen"; target: FullscreenTarget };
 
-export function initModel(settings: StoredSettings): [Model, Cmd[]] {
+export function initModel(): [Model, Cmd[]] {
   const model: Model = {
     items: [],
-    selectedId: null,
+    selectedId: none(),
     status: "Loading index...",
-    error: null,
     search: "",
-    field: "",
-    date: "",
-    tag: "",
-    theme: settings.theme === "dark" ? "dark" : "light",
-    imageTone: normalizeToneMode(settings.imageTone),
-    fitMode: normalizeFitMode(settings.fitMode),
-    brightness: settings.brightness ?? 0,
-    contrast: settings.contrast ?? 0,
-    autoNormalize: settings.autoNormalize,
+    field: none(),
+    date: none(),
+    tag: none(),
+    theme: THEMES.LIGHT,
+    tone: {
+      mode: TONE_MODES.AUTO,
+      brightness: 0,
+      contrast: 0,
+      autoNormalize: false,
+    },
+    fitMode: FIT_MODES.BOTH,
     rotation: 0,
     zoom: 1,
-    fullscreen: false,
-    fullscreenToolsPinned: false,
-    fullscreenToolsHidden: false,
+    fullscreen: none(),
+    fullscreenTools: FULLSCREEN_TOOLS.HOVER_READY,
+    detailTab: DETAIL_TABS.BODY,
+    collapsedXmlPaths: [],
     layout: {
-      filtersWidth: settings.filtersWidth,
-      resultsWidth: settings.resultsWidth,
-      previewHeight: settings.previewHeight,
-      previewViewport: null,
+      filtersWidth: none(),
+      resultsWidth: none(),
+      previewHeight: none(),
+      previewViewport: none(),
     },
     image: {
-      naturalSize: null,
-      processedSize: null,
+      naturalSize: none(),
       token: 0,
-      processing: false,
     },
   };
-  return [model, [{ type: "ApplyTheme", theme: model.theme }, { type: "LoadContents" }, { type: "MeasureLayout" }]];
+  return [model, [{ type: "LoadContents" }, { type: "MeasureLayout" }]];
 }
 
 export function update(model: Model, msg: Msg): [Model, Cmd[]] {
@@ -169,12 +176,11 @@ export function update(model: Model, msg: Msg): [Model, Cmd[]] {
         ...model,
         items: msg.items,
         status: "Index loaded",
-        error: null,
       });
       return [next, [{ type: "MeasureLayout" }]];
     }
     case "ContentsFailed":
-      return [{ ...model, status: msg.message, error: msg.message }, []];
+      return [{ ...model, status: msg.message }, []];
     case "SearchChanged":
       return [normalizeSelection({ ...model, search: msg.value }), []];
     case "FieldChanged":
@@ -182,176 +188,137 @@ export function update(model: Model, msg: Msg): [Model, Cmd[]] {
     case "DateChanged":
       return [normalizeSelection({ ...model, date: msg.value }), []];
     case "TagToggled":
-      return [normalizeSelection({ ...model, tag: model.tag === msg.tag ? "" : msg.tag }), []];
+      return [normalizeSelection({ ...model, tag: nextTag(model.tag, msg.tag) }), []];
     case "SelectItem":
       return [selectedImageReset({ ...model, selectedId: msg.id }), [{ type: "MeasureLayout" }]];
     case "ToggleTheme": {
-      const next = imageToneReset({
+      const next = invalidateProcessedImage({
         ...model,
-        theme: model.theme === "dark" ? "light" : "dark",
+        theme: nextTheme(model.theme),
       });
-      return [
-        next,
-        [
-          { type: "ApplyTheme", theme: next.theme },
-          { type: "Persist", key: "studyprint-theme", value: next.theme },
-          ...imageProcessCmd(next),
-        ],
-      ];
+      return [next, imageProcessCmd(next)];
     }
     case "CycleTone": {
-      const next = imageToneReset({ ...model, imageTone: nextToneMode(model.imageTone) });
-      return [
-        next,
-        [
-          { type: "Persist", key: "studyprint-image-tone", value: next.imageTone },
-          ...imageProcessCmd(next),
-        ],
-      ];
+      const next = invalidateProcessedImage({
+        ...model,
+        tone: { ...model.tone, mode: nextToneMode(model.tone.mode) },
+      });
+      return [next, imageProcessCmd(next)];
     }
     case "ToggleNormalize": {
-      const next = imageToneReset({ ...model, autoNormalize: !model.autoNormalize });
-      return [
-        next,
-        [
-          { type: "Persist", key: "studyprint-auto-normalize", value: next.autoNormalize ? "1" : "0" },
-          ...scheduleImageProcessCmd(next),
-        ],
-      ];
+      const next = invalidateProcessedImage({
+        ...model,
+        tone: { ...model.tone, autoNormalize: !model.tone.autoNormalize },
+      });
+      return [next, imageProcessCmd(next)];
     }
     case "ResetToneAdjustments": {
-      const next = imageToneReset({
+      const next = invalidateProcessedImage({
         ...model,
-        brightness: 0,
-        contrast: 0,
-        autoNormalize: false,
+        tone: { ...model.tone, brightness: 0, contrast: 0, autoNormalize: false },
       });
-      return [
-        next,
-        [
-          { type: "Persist", key: "studyprint-brightness", value: "0" },
-          { type: "Persist", key: "studyprint-contrast", value: "0" },
-          { type: "RemovePersisted", key: "studyprint-auto-normalize" },
-          ...scheduleImageProcessCmd(next),
-        ],
-      ];
+      return [next, imageProcessCmd(next)];
     }
     case "BrightnessChanged": {
-      const next = imageToneReset({
+      const next = invalidateProcessedImage({
         ...model,
-        brightness: clamp(msg.value, -60, 60),
+        tone: { ...model.tone, brightness: normalizeToneBrightness(msg.value) },
       });
-      return [
-        next,
-        [
-          { type: "Persist", key: "studyprint-brightness", value: String(next.brightness) },
-          ...scheduleImageProcessCmd(next),
-        ],
-      ];
+      return [next, imageProcessCmd(next)];
     }
     case "ContrastChanged": {
-      const next = imageToneReset({
+      const next = invalidateProcessedImage({
         ...model,
-        contrast: clamp(msg.value, -60, 100),
+        tone: { ...model.tone, contrast: normalizeToneContrast(msg.value) },
       });
-      return [
-        next,
-        [
-          { type: "Persist", key: "studyprint-contrast", value: String(next.contrast) },
-          ...scheduleImageProcessCmd(next),
-        ],
-      ];
+      return [next, imageProcessCmd(next)];
     }
     case "RotateBy":
       return [{ ...model, rotation: normalizeRotation(model.rotation + msg.degrees) }, []];
     case "ZoomBy":
       return [{ ...model, zoom: clamp(model.zoom + msg.delta, MIN_ZOOM, MAX_ZOOM) }, []];
     case "SetFitMode":
-      return [
-        { ...model, fitMode: msg.mode },
-        [{ type: "Persist", key: "studyprint-fit-mode", value: msg.mode }],
-      ];
+      return [{ ...model, fitMode: msg.mode }, []];
+    case "SetDetailTab":
+      return [{ ...model, detailTab: msg.tab }, []];
+    case "ToggleXmlNode":
+      return [{ ...model, collapsedXmlPaths: toggleString(model.collapsedXmlPaths, msg.path) }, []];
     case "ResetView":
       return [{ ...model, rotation: 0, zoom: 1 }, []];
     case "ImageLoaded": {
-      const next = imageToneReset({
+      const next = invalidateProcessedImage({
         ...model,
         image: {
-          naturalSize: msg.size,
-          processedSize: null,
+          naturalSize: some(msg.size),
           token: model.image.token + 1,
-          processing: false,
         },
       });
       return [next, [{ type: "MeasureLayout" }, ...imageProcessCmd(next)]];
     }
-    case "ImageProcessingStarted":
-      if (msg.token !== model.image.token) return [model, []];
-      return [{ ...model, image: { ...model.image, processing: true } }, []];
-    case "ImageProcessed":
-      if (msg.token !== model.image.token) return [model, []];
-      return [
-        {
-          ...model,
-          image: { ...model.image, processedSize: msg.size, processing: false },
-        },
-        [{ type: "MeasureLayout" }],
-      ];
-    case "ImageProcessingCleared":
-      if (msg.token !== model.image.token) return [model, []];
-      return [
-        {
-          ...model,
-          image: { ...model.image, processedSize: null, processing: false },
-        },
-        [{ type: "MeasureLayout" }],
-      ];
     case "LayoutMeasured":
       return [applyLayoutMetrics(model, msg.metrics), []];
     case "ResizePanel": {
       const next = resizePanel(model, msg.target, msg.value, msg.metrics);
-      return [
-        next,
-        [
-          { type: "Persist", key: "studyprint-filters-width", value: String(next.layout.filtersWidth ?? "") },
-          { type: "Persist", key: "studyprint-results-width", value: String(next.layout.resultsWidth ?? "") },
-          ...(next.layout.previewHeight == null
-            ? []
-            : [{ type: "Persist", key: "studyprint-preview-height", value: String(next.layout.previewHeight) } as Cmd]),
-        ],
-      ];
+      return [next, []];
     }
     case "FullscreenChanged":
       return [
         {
           ...model,
-          fullscreen: msg.active,
-          fullscreenToolsHidden: msg.active ? model.fullscreenToolsHidden : false,
+          fullscreen: msg.target,
+          fullscreenTools: isSome(msg.target) ? model.fullscreenTools : FULLSCREEN_TOOLS.HOVER_READY,
         },
         [{ type: "MeasureLayout" }],
       ];
-    case "ToggleFullscreenTools":
+    case "FullscreenToolsPointerEntered":
       return [
         {
           ...model,
-          fullscreenToolsHidden: !model.fullscreenToolsHidden,
-          fullscreenToolsPinned: model.fullscreenToolsHidden ? false : model.fullscreenToolsPinned,
+          fullscreenTools:
+            model.fullscreenTools === FULLSCREEN_TOOLS.HOVER_READY
+              ? FULLSCREEN_TOOLS.HOVER_OPEN
+              : model.fullscreenTools,
         },
         [],
       ];
+    case "FullscreenToolsPointerLeft":
+      return [
+        {
+          ...model,
+          fullscreenTools:
+            model.fullscreenTools === FULLSCREEN_TOOLS.HOVER_OPEN
+              ? FULLSCREEN_TOOLS.HOVER_READY
+              : model.fullscreenTools,
+        },
+        [],
+      ];
+    case "ToggleFullscreenTools": {
+      return [
+        {
+          ...model,
+          fullscreenTools: nextFullscreenToolsFromTab(model.fullscreenTools),
+        },
+        [],
+      ];
+    }
     case "HideFullscreenTools":
-      return [{ ...model, fullscreenToolsHidden: true, fullscreenToolsPinned: false }, []];
+      return [
+        {
+          ...model,
+          fullscreenTools: FULLSCREEN_TOOLS.HIDDEN,
+        },
+        [],
+      ];
     case "ToggleFullscreenToolsPin":
       return [
         {
           ...model,
-          fullscreenToolsPinned: !model.fullscreenToolsPinned,
-          fullscreenToolsHidden: false,
+          fullscreenTools: nextFullscreenToolsFromPin(model.fullscreenTools),
         },
         [],
       ];
     case "RequestFullscreenToggle":
-      return [model, [{ type: "ToggleFullscreen" }]];
+      return [model, [{ type: "ToggleFullscreen", target: msg.target }]];
   }
 }
 
@@ -368,28 +335,36 @@ export function filteredItems(model: Model): StudyPrintItem[] {
       .join(" ")
       .toLowerCase();
     return (
-      (!query || searchable.includes(query)) &&
-      (!model.field || item.primary_field_path === model.field) &&
-      (!model.date || item.logical_date === model.date) &&
-      (!model.tag || item.tags.includes(model.tag))
+      queryMatches(query, searchable) &&
+      fieldMatches(model.field, item) &&
+      dateMatches(model.date, item) &&
+      tagMatches(model.tag, item)
     );
   });
 }
 
-export function selectedItem(model: Model): StudyPrintItem | null {
-  return model.items.find((item) => item.global_content_id === model.selectedId) ?? null;
+export function selectedItem(model: Model): Option<StudyPrintItem> {
+  if (!isSome(model.selectedId)) return none();
+  const selectedId = model.selectedId.value;
+  return findOption(model.items, (candidate) => candidate.global_content_id === selectedId);
 }
 
 export function metricValues(model: Model): { contents: number; fields: number; formulas: number } {
   return {
     contents: model.items.length,
-    fields: new Set(model.items.map((item) => item.primary_field_ref)).size,
+    fields: new Set(model.items.map((item) => item.primary_field_path)).size,
     formulas: model.items.reduce((sum, item) => sum + item.formula_count, 0),
   };
 }
 
 export function fieldCounts(model: Model): Map<string, number> {
-  return countBy(model.items, (item) => item.primary_field_path);
+  const counts = new Map<string, number>();
+  model.items.forEach((item) => {
+    fieldPathOptions(item.primary_field_path).forEach((path) => {
+      counts.set(path, mapCount(counts, path) + 1);
+    });
+  });
+  return counts;
 }
 
 export function dateCounts(model: Model): Map<string, number> {
@@ -403,40 +378,92 @@ export function tagCounts(model: Model): Map<string, number> {
   );
 }
 
-export function activeSourceSize(model: Model): Size | null {
-  return needsCanvasProcessing(model) && model.image.processedSize
-    ? model.image.processedSize
-    : model.image.naturalSize;
+export function activeSourceSize(model: Model): Option<Size> {
+  return model.image.naturalSize;
 }
 
 export function needsCanvasProcessing(model: Model): boolean {
-  return (
-    toneIsInverted(model.imageTone, model.theme) ||
-    model.autoNormalize ||
-    model.brightness !== 0 ||
-    model.contrast !== 0
-  );
+  return toneRequiresCanvas(model.tone, model.theme);
 }
 
 export function toneAdjustmentsActive(model: Model): boolean {
-  return model.brightness !== 0 || model.contrast !== 0 || model.autoNormalize;
+  return toneHasAdjustments(model.tone);
 }
 
 export function toneLabel(model: Model): string {
-  if (model.imageTone === TONE_MODES.AUTO) return "Auto";
-  if (model.imageTone === TONE_MODES.INVERTED) return "Invert";
+  if (model.tone.mode === TONE_MODES.AUTO) return "Auto";
+  if (model.tone.mode === TONE_MODES.INVERTED) return "Invert";
   return "Paper";
 }
 
 function normalizeSelection(model: Model): Model {
   const filtered = filteredItems(model);
   if (filtered.length === 0) {
-    return selectedImageReset({ ...model, selectedId: null });
+    return selectedImageReset({ ...model, selectedId: none() });
   }
-  if (model.selectedId && filtered.some((item) => item.global_content_id === model.selectedId)) {
-    return model;
+  if (isSome(model.selectedId)) {
+    const selectedId = model.selectedId.value;
+    if (filtered.some((item) => item.global_content_id === selectedId)) {
+      return model;
+    }
   }
-  return selectedImageReset({ ...model, selectedId: filtered[0]?.global_content_id ?? null });
+  const first = firstOption(filtered);
+  return selectedImageReset({
+    ...model,
+    selectedId: optionMap(first, (item) => item.global_content_id),
+  });
+}
+
+function queryMatches(query: string, searchable: string): boolean {
+  if (query.length === 0) return true;
+  return searchable.includes(query);
+}
+
+function fieldMatches(field: Option<string>, item: StudyPrintItem): boolean {
+  if (!isSome(field)) return true;
+  const selected = normalizeFieldPath(field.value);
+  if (selected.length === 0) return true;
+  const itemPath = normalizeFieldPath(item.primary_field_path);
+  return itemPath === selected || itemPath.startsWith(`${selected}/`);
+}
+
+function dateMatches(date: Option<string>, item: StudyPrintItem): boolean {
+  if (!isSome(date)) return true;
+  return item.logical_date === date.value;
+}
+
+function tagMatches(tag: Option<string>, item: StudyPrintItem): boolean {
+  if (!isSome(tag)) return true;
+  return item.tags.includes(tag.value);
+}
+
+function nextTag(current: Option<string>, tag: string): Option<string> {
+  if (isSome(current) && current.value === tag) return none();
+  return some(tag);
+}
+
+function nextFullscreenToolsFromTab(state: FullscreenToolsState): FullscreenToolsState {
+  if (state === FULLSCREEN_TOOLS.PINNED) return FULLSCREEN_TOOLS.HIDDEN;
+  return FULLSCREEN_TOOLS.PINNED;
+}
+
+function nextFullscreenToolsFromPin(state: FullscreenToolsState): FullscreenToolsState {
+  if (state === FULLSCREEN_TOOLS.PINNED) return FULLSCREEN_TOOLS.HOVER_OPEN;
+  return FULLSCREEN_TOOLS.PINNED;
+}
+
+function firstOption<T>(values: T[]): Option<T> {
+  for (const value of values) {
+    return some(value);
+  }
+  return none();
+}
+
+function findOption<T>(values: T[], predicate: (value: T) => boolean): Option<T> {
+  for (const value of values) {
+    if (predicate(value)) return some(value);
+  }
+  return none();
 }
 
 function selectedImageReset(model: Model): Model {
@@ -444,43 +471,33 @@ function selectedImageReset(model: Model): Model {
     ...model,
     rotation: 0,
     zoom: 1,
+    collapsedXmlPaths: [],
     image: {
-      naturalSize: null,
-      processedSize: null,
+      naturalSize: none(),
       token: model.image.token + 1,
-      processing: false,
     },
   };
 }
 
-function imageToneReset(model: Model): Model {
+function invalidateProcessedImage(model: Model): Model {
   return {
     ...model,
     image: {
       ...model.image,
-      processedSize: null,
       token: model.image.token + 1,
-      processing: false,
     },
   };
 }
 
 function imageProcessCmd(model: Model): Cmd[] {
-  if (!model.image.naturalSize) return [];
-  return needsCanvasProcessing(model)
-    ? [{ type: "ProcessImage", token: model.image.token }]
-    : [{ type: "ProcessImage", token: model.image.token }];
-}
-
-function scheduleImageProcessCmd(model: Model): Cmd[] {
-  if (!model.image.naturalSize) return [];
-  return [{ type: "ScheduleProcessImage", token: model.image.token }];
+  if (!isSome(model.image.naturalSize)) return [];
+  return [{ type: "SyncImageProcessing", token: model.image.token }];
 }
 
 function applyLayoutMetrics(model: Model, metrics: LayoutMetrics): Model {
   return {
     ...model,
-    layout: clampLayout({ ...model.layout, previewViewport: metrics.previewViewport }, metrics),
+    layout: clampLayout({ ...model.layout, previewViewport: some(metrics.previewViewport) }, metrics),
   };
 }
 
@@ -491,62 +508,91 @@ function resizePanel(
   metrics: LayoutMetrics,
 ): Model {
   const layout = { ...model.layout };
-  if (target === "filters") layout.filtersWidth = value;
-  if (target === "results") layout.resultsWidth = value;
-  if (target === "preview") layout.previewHeight = value;
+  if (target === "filters") layout.filtersWidth = some(value);
+  if (target === "results") layout.resultsWidth = some(value);
+  if (target === "preview") layout.previewHeight = some(value);
   return {
     ...model,
-    layout: clampLayout({ ...layout, previewViewport: metrics.previewViewport }, metrics),
+    layout: clampLayout({ ...layout, previewViewport: some(metrics.previewViewport) }, metrics),
   };
 }
 
 function clampLayout(layout: LayoutState, metrics: LayoutMetrics): LayoutState {
-  if (!metrics.verticalHandlesVisible) {
+  const available = metrics.workspaceWidth - MIN_DETAIL_WIDTH - HANDLE_WIDTH_TOTAL;
+  if (available < MIN_FILTERS_WIDTH + MIN_RESULTS_WIDTH) {
     return {
       ...layout,
       previewHeight: clampPreviewHeight(layout.previewHeight, metrics),
     };
   }
 
-  const available = metrics.workspaceWidth - MIN_DETAIL_WIDTH - HANDLE_WIDTH_TOTAL;
-  let filtersWidth = clamp(layout.filtersWidth ?? 260, MIN_FILTERS_WIDTH, 600);
-  let resultsWidth = clamp(layout.resultsWidth ?? 420, MIN_RESULTS_WIDTH, 760);
+  let filtersWidth = clamp(optionValueOr(layout.filtersWidth, 260), MIN_FILTERS_WIDTH, 600);
+  let resultsWidth = clamp(optionValueOr(layout.resultsWidth, 420), MIN_RESULTS_WIDTH, 760);
 
-  if (available >= MIN_FILTERS_WIDTH + MIN_RESULTS_WIDTH) {
-    const overflow = filtersWidth + resultsWidth - available;
-    if (overflow > 0) {
-      const reducedResults = Math.max(MIN_RESULTS_WIDTH, resultsWidth - overflow);
-      const remainingOverflow = overflow - (resultsWidth - reducedResults);
-      resultsWidth = reducedResults;
-      filtersWidth = Math.max(MIN_FILTERS_WIDTH, filtersWidth - remainingOverflow);
-    }
+  const overflow = filtersWidth + resultsWidth - available;
+  if (overflow > 0) {
+    const reducedResults = Math.max(MIN_RESULTS_WIDTH, resultsWidth - overflow);
+    const remainingOverflow = overflow - (resultsWidth - reducedResults);
+    resultsWidth = reducedResults;
+    filtersWidth = Math.max(MIN_FILTERS_WIDTH, filtersWidth - remainingOverflow);
   }
 
   return {
     ...layout,
-    filtersWidth: Math.round(filtersWidth),
-    resultsWidth: Math.round(resultsWidth),
+    filtersWidth: some(Math.round(filtersWidth)),
+    resultsWidth: some(Math.round(resultsWidth)),
     previewHeight: clampPreviewHeight(layout.previewHeight, metrics),
   };
 }
 
-function clampPreviewHeight(value: number | null, metrics: LayoutMetrics): number | null {
-  if (value == null) return null;
-  const reservedHeight =
-    metrics.detailHeadHeight + metrics.detailTagsHeight + MIN_TEXT_HEIGHT + 64;
+function clampPreviewHeight(value: Option<number>, metrics: LayoutMetrics): Option<number> {
+  if (!isSome(value)) return none();
+  const reservedHeight = metrics.detailHeadHeight + MIN_DETAIL_INFO_HEIGHT + 64;
   const maxPreviewHeight = Math.max(MIN_PREVIEW_HEIGHT, metrics.detailHeight - reservedHeight);
-  return Math.round(clamp(value, MIN_PREVIEW_HEIGHT, maxPreviewHeight));
+  return some(Math.round(clamp(value.value, MIN_PREVIEW_HEIGHT, maxPreviewHeight)));
+}
+
+function toggleString(values: string[], target: string): string[] {
+  if (values.includes(target)) {
+    return values.filter((value) => value !== target);
+  }
+  return [...values, target];
 }
 
 function normalizeRotation(value: number): number {
   return ((value % 360) + 360) % 360;
 }
 
+function fieldPathOptions(path: string): string[] {
+  const segments = fieldPathSegments(path);
+  const options: string[] = [];
+  segments.forEach((_, index) => {
+    options.push(segments.slice(0, index + 1).join("/"));
+  });
+  return options;
+}
+
+function normalizeFieldPath(path: string): string {
+  return fieldPathSegments(path).join("/");
+}
+
+function fieldPathSegments(path: string): string[] {
+  return path
+    .split("/")
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0);
+}
+
 function countBy<T>(values: T[], keyFn: (value: T) => string): Map<string, number> {
   const counts = new Map<string, number>();
   values.forEach((value) => {
     const key = keyFn(value);
-    counts.set(key, (counts.get(key) ?? 0) + 1);
+    counts.set(key, mapCount(counts, key) + 1);
   });
   return counts;
+}
+
+function mapCount(counts: Map<string, number>, key: string): number {
+  if (counts.has(key)) return counts.get(key) as number;
+  return 0;
 }

@@ -2,14 +2,25 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   FIT_MODES,
+  AUTO_DARK_BRIGHTNESS_OFFSET,
+  THEMES,
+  TONE_BRIGHTNESS_MAX,
+  TONE_BRIGHTNESS_MIN,
+  TONE_CONTRAST_MIN,
   TONE_MODES,
   adjustedLightness,
   lightnessRangeFromHistogram,
   mediaLayout,
   nextToneMode,
-  normalizeFitMode,
+  normalizeToneBrightness,
+  normalizeToneContrast,
+  oklabToDisplaySrgb,
   sourceLightness,
+  srgbToOklab,
+  toneHasAdjustments,
   toneIsInverted,
+  toneOptions,
+  toneRequiresCanvas,
 } from "../../static/viewer-core.js";
 
 test("fit modes create the expected scroll direction", () => {
@@ -53,12 +64,50 @@ test("rotation participates in fit calculations", () => {
   assert.equal(layout.overflowY, false);
 });
 
-test("tone mode and fit mode normalization are deterministic", () => {
-  assert.equal(normalizeFitMode("unknown"), FIT_MODES.BOTH);
+test("tone mode transitions are deterministic", () => {
   assert.equal(nextToneMode(TONE_MODES.AUTO), TONE_MODES.INVERTED);
   assert.equal(nextToneMode(TONE_MODES.INVERTED), TONE_MODES.ORIGINAL);
-  assert.equal(toneIsInverted(TONE_MODES.AUTO, "dark"), true);
-  assert.equal(toneIsInverted(TONE_MODES.AUTO, "light"), false);
+  assert.equal(toneIsInverted(TONE_MODES.AUTO, THEMES.DARK), true);
+  assert.equal(toneIsInverted(TONE_MODES.AUTO, THEMES.LIGHT), false);
+});
+
+test("tone numeric inputs are clamped before entering app state", () => {
+  assert.equal(normalizeToneBrightness(999), TONE_BRIGHTNESS_MAX);
+  assert.equal(normalizeToneBrightness(Number.NaN), 0);
+  assert.equal(normalizeToneContrast(-999), TONE_CONTRAST_MIN);
+  assert.equal(normalizeToneContrast(Number.POSITIVE_INFINITY), 0);
+});
+
+test("tone processing options are derived from one tone state", () => {
+  const tone = {
+    mode: TONE_MODES.AUTO,
+    brightness: 0,
+    contrast: 20,
+    autoNormalize: false,
+  };
+  assert.deepEqual(toneOptions(tone, THEMES.DARK), {
+    inverted: true,
+    autoNormalize: false,
+    brightness: AUTO_DARK_BRIGHTNESS_OFFSET,
+    contrast: 20,
+  });
+  assert.equal(toneRequiresCanvas(tone, THEMES.DARK), true);
+  assert.equal(toneHasAdjustments(tone), true);
+});
+
+test("dark auto tone raises paper lightness without mutating user brightness", () => {
+  const tone = {
+    mode: TONE_MODES.AUTO,
+    brightness: 0,
+    contrast: 0,
+    autoNormalize: false,
+  };
+
+  assert.equal(tone.brightness, 0);
+  assert.equal(toneHasAdjustments(tone), false);
+  assert.equal(toneOptions(tone, THEMES.LIGHT).brightness, 0);
+  assert.equal(toneOptions(tone, THEMES.DARK).brightness, AUTO_DARK_BRIGHTNESS_OFFSET);
+  assert.equal(toneOptions({ ...tone, mode: TONE_MODES.INVERTED }, THEMES.DARK).brightness, 0);
 });
 
 test("lightness processing preserves explicit inversion and clamps output", () => {
@@ -74,9 +123,34 @@ test("lightness processing preserves explicit inversion and clamps output", () =
   );
 });
 
+test("inverted tone turns paper dark while keeping pen hue orientation", () => {
+  const paper = transformRgb({ r: 255, g: 255, b: 255 }, true);
+  assert.equal(paper.r < 8 && paper.g < 8 && paper.b < 8, true);
+
+  const ink = transformRgb({ r: 0, g: 0, b: 0 }, true);
+  assert.equal(ink.r > 247 && ink.g > 247 && ink.b > 247, true);
+
+  const redPen = transformRgb({ r: 220, g: 32, b: 32 }, true);
+  assert.equal(redPen.r > redPen.g && redPen.r > redPen.b, true);
+});
+
 test("histogram range uses percentile bounds for auto normalization", () => {
   const histogram = new Uint32Array([1, 0, 2, 7]);
   const range = lightnessRangeFromHistogram(histogram, 10, 0.1, 0.9);
   assert.equal(range.low, 0);
   assert.equal(range.high, 1);
 });
+
+function transformRgb(rgb, inverted) {
+  const lab = srgbToOklab(rgb.r, rgb.g, rgb.b);
+  return oklabToDisplaySrgb(
+    adjustedLightness(sourceLightness(lab.l, inverted), {
+      inverted,
+      autoNormalize: false,
+      brightness: 0,
+      contrast: 0,
+    }),
+    lab.a,
+    lab.b,
+  );
+}
