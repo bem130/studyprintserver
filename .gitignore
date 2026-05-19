@@ -1,3 +1,4 @@
 node_modules/
 static/generated/
 target/
+server.*.log
