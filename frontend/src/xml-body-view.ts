@@ -6,14 +6,21 @@ const STUDYPRINT_NS = "urn:slf:studyprint:0.5";
 const BODY_DISPLAY_SKIPPED_ELEMENTS = new Set(["tex", "altText"]);
 const BLOCK_FORMULA_DISPLAY = "block";
 
+interface BodyContent {
+  contentId: string;
+  title: Option<string>;
+  bodyOriginal: Element;
+  selected: boolean;
+}
+
 export function viewStudyPrintBody(xmlText: string, globalContentId: string): VNode {
   const documentOption = parseXmlDocument(xmlText);
   if (!isSome(documentOption)) {
     return h("pre", { id: "detailText", class: "studyprint-body studyprint-body-error" }, xmlText);
   }
 
-  const bodyOriginal = bodyOriginalForContent(documentOption.value, globalContentId);
-  if (!isSome(bodyOriginal)) {
+  const bodyContents = bodyContentsForPrint(documentOption.value, globalContentId);
+  if (bodyContents.length === 0) {
     return h(
       "div",
       { id: "detailText", class: "studyprint-body studyprint-body-error" },
@@ -24,7 +31,7 @@ export function viewStudyPrintBody(xmlText: string, globalContentId: string): VN
   return h(
     "div",
     { id: "detailText", class: "studyprint-body" },
-    renderChildNodes(bodyOriginal.value, "body"),
+    bodyContents.map((content, index) => renderBodyContent(content, `body/${String(index)}`)),
   );
 }
 
@@ -78,6 +85,23 @@ function renderNode(node: Node, path: string): VNode | string {
     default:
       return h("div", { key: path, class: "body-block" }, renderChildNodes(element, path));
   }
+}
+
+function renderBodyContent(content: BodyContent, path: string): VNode {
+  return h(
+    "article",
+    {
+      key: path,
+      class: content.selected ? "body-content body-content-selected" : "body-content",
+    },
+    h(
+      "header",
+      { class: "body-content-head" },
+      h("span", { class: "body-content-id" }, content.contentId),
+      h("h3", { class: "body-content-title" }, optionValueOr(content.title, "Untitled content")),
+    ),
+    h("div", { class: "body-content-body" }, renderChildNodes(content.bodyOriginal, path)),
+  );
 }
 
 function renderSection(element: Element, path: string): VNode {
@@ -167,35 +191,57 @@ function shouldRenderBodyNode(node: Node): boolean {
   return !BODY_DISPLAY_SKIPPED_ELEMENTS.has((node as Element).localName);
 }
 
+function bodyContentsForPrint(document: Document, globalContentId: string): BodyContent[] {
+  const selectedContentId = contentIdFromGlobal(globalContentId);
+  const contents: BodyContent[] = [];
+  for (const content of elementsByLocalName(document, "content")) {
+    const bodyOriginal = firstDescendantByLocalName(content, "body_original");
+    if (isSome(bodyOriginal)) {
+      const contentId = optionValueOr(attributeOption(content, "id"), `content-${String(contents.length + 1)}`);
+      contents.push({
+        contentId,
+        title: contentTitle(content),
+        bodyOriginal: bodyOriginal.value,
+        selected: isSome(selectedContentId) && selectedContentId.value === contentId,
+      });
+    }
+  }
+
+  if (contents.length > 0) {
+    return contents;
+  }
+
+  const fallback = firstElementByLocalName(document, "body_original");
+  if (isSome(fallback)) {
+    return [
+      {
+        contentId: "content",
+        title: none(),
+        bodyOriginal: fallback.value,
+        selected: false,
+      },
+    ];
+  }
+  return [];
+}
+
 function firstElementByLocalName(document: Document, localName: string): Option<Element> {
   const elements = elementsByLocalName(document, localName);
   return firstArrayItem(elements);
 }
 
-function bodyOriginalForContent(document: Document, globalContentId: string): Option<Element> {
-  const contentId = contentIdFromGlobal(globalContentId);
-  if (isSome(contentId)) {
-    const content = contentElementById(document, contentId.value);
-    if (isSome(content)) {
-      const body = firstDescendantByLocalName(content.value, "body_original");
-      if (isSome(body)) return body;
-    }
-  }
-  return firstElementByLocalName(document, "body_original");
+function contentTitle(content: Element): Option<string> {
+  const meta = firstDirectChild(content, "meta");
+  const title = isSome(meta) ? firstDescendantByLocalName(meta.value, "title") : none<Element>();
+  if (!isSome(title)) return none();
+  const text = normalizedText(title.value);
+  return text.length > 0 ? some(text) : none();
 }
 
 function contentIdFromGlobal(globalContentId: string): Option<string> {
   const parts = globalContentId.split("#");
   if (parts.length < 2) return none();
   return firstArrayItem(parts.slice(parts.length - 1));
-}
-
-function contentElementById(document: Document, contentId: string): Option<Element> {
-  for (const element of elementsByLocalName(document, "content")) {
-    const id = attributeOption(element, "id");
-    if (isSome(id) && id.value === contentId) return some(element);
-  }
-  return none();
 }
 
 function firstDescendantByLocalName(element: Element, localName: string): Option<Element> {
@@ -247,8 +293,12 @@ function attributeOption(element: Element, name: string): Option<string> {
   return isSome(value) ? some(value.value) : none();
 }
 
-function normalizedFormulaText(element: Element): string {
+function normalizedText(element: Element): string {
   return textContent(element).replace(/\s+/g, " ").trim();
+}
+
+function normalizedFormulaText(element: Element): string {
+  return normalizedText(element);
 }
 
 function formulaAltText(element: Element, fallback: string): string {

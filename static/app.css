@@ -617,6 +617,53 @@ input[type="range"] {
   word-break: break-word;
 }
 
+.body-content {
+  min-width: 0;
+  padding: 0 0 18px;
+}
+
+.body-content + .body-content {
+  border-top: 2px solid var(--line);
+  padding-top: 18px;
+}
+
+.body-content-head {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 8px;
+  align-items: baseline;
+  margin: 0 0 12px;
+}
+
+.body-content-id {
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 1px 6px;
+  color: var(--muted);
+  font-family:
+    "Cascadia Mono",
+    monospace;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.body-content-title {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-size: 16px;
+  line-height: 1.35;
+}
+
+.body-content-selected .body-content-id {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.body-content-body {
+  min-width: 0;
+}
+
 .body-section {
   padding: 2px 0 14px;
 }

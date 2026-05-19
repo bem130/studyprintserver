@@ -8,11 +8,11 @@ export function viewStudyPrintBody(xmlText, globalContentId) {
     if (!isSome(documentOption)) {
         return h("pre", { id: "detailText", class: "studyprint-body studyprint-body-error" }, xmlText);
     }
-    const bodyOriginal = bodyOriginalForContent(documentOption.value, globalContentId);
-    if (!isSome(bodyOriginal)) {
+    const bodyContents = bodyContentsForPrint(documentOption.value, globalContentId);
+    if (bodyContents.length === 0) {
         return h("div", { id: "detailText", class: "studyprint-body studyprint-body-error" }, h("p", {}, "body_original is missing."));
     }
-    return h("div", { id: "detailText", class: "studyprint-body" }, renderChildNodes(bodyOriginal.value, "body"));
+    return h("div", { id: "detailText", class: "studyprint-body" }, bodyContents.map((content, index) => renderBodyContent(content, `body/${String(index)}`)));
 }
 function parseXmlDocument(xmlText) {
     const document = new DOMParser().parseFromString(xmlText, "application/xml");
@@ -62,6 +62,12 @@ function renderNode(node, path) {
         default:
             return h("div", { key: path, class: "body-block" }, renderChildNodes(element, path));
     }
+}
+function renderBodyContent(content, path) {
+    return h("article", {
+        key: path,
+        class: content.selected ? "body-content body-content-selected" : "body-content",
+    }, h("header", { class: "body-content-head" }, h("span", { class: "body-content-id" }, content.contentId), h("h3", { class: "body-content-title" }, optionValueOr(content.title, "Untitled content"))), h("div", { class: "body-content-body" }, renderChildNodes(content.bodyOriginal, path)));
 }
 function renderSection(element, path) {
     return h("section", {
@@ -127,35 +133,54 @@ function shouldRenderBodyNode(node) {
     }
     return !BODY_DISPLAY_SKIPPED_ELEMENTS.has(node.localName);
 }
+function bodyContentsForPrint(document, globalContentId) {
+    const selectedContentId = contentIdFromGlobal(globalContentId);
+    const contents = [];
+    for (const content of elementsByLocalName(document, "content")) {
+        const bodyOriginal = firstDescendantByLocalName(content, "body_original");
+        if (isSome(bodyOriginal)) {
+            const contentId = optionValueOr(attributeOption(content, "id"), `content-${String(contents.length + 1)}`);
+            contents.push({
+                contentId,
+                title: contentTitle(content),
+                bodyOriginal: bodyOriginal.value,
+                selected: isSome(selectedContentId) && selectedContentId.value === contentId,
+            });
+        }
+    }
+    if (contents.length > 0) {
+        return contents;
+    }
+    const fallback = firstElementByLocalName(document, "body_original");
+    if (isSome(fallback)) {
+        return [
+            {
+                contentId: "content",
+                title: none(),
+                bodyOriginal: fallback.value,
+                selected: false,
+            },
+        ];
+    }
+    return [];
+}
 function firstElementByLocalName(document, localName) {
     const elements = elementsByLocalName(document, localName);
     return firstArrayItem(elements);
 }
-function bodyOriginalForContent(document, globalContentId) {
-    const contentId = contentIdFromGlobal(globalContentId);
-    if (isSome(contentId)) {
-        const content = contentElementById(document, contentId.value);
-        if (isSome(content)) {
-            const body = firstDescendantByLocalName(content.value, "body_original");
-            if (isSome(body))
-                return body;
-        }
-    }
-    return firstElementByLocalName(document, "body_original");
+function contentTitle(content) {
+    const meta = firstDirectChild(content, "meta");
+    const title = isSome(meta) ? firstDescendantByLocalName(meta.value, "title") : none();
+    if (!isSome(title))
+        return none();
+    const text = normalizedText(title.value);
+    return text.length > 0 ? some(text) : none();
 }
 function contentIdFromGlobal(globalContentId) {
     const parts = globalContentId.split("#");
     if (parts.length < 2)
         return none();
     return firstArrayItem(parts.slice(parts.length - 1));
-}
-function contentElementById(document, contentId) {
-    for (const element of elementsByLocalName(document, "content")) {
-        const id = attributeOption(element, "id");
-        if (isSome(id) && id.value === contentId)
-            return some(element);
-    }
-    return none();
 }
 function firstDescendantByLocalName(element, localName) {
     const namespaced = element.getElementsByTagNameNS(STUDYPRINT_NS, localName);
@@ -203,8 +228,11 @@ function attributeOption(element, name) {
     const value = nullableOption(element.getAttribute(name));
     return isSome(value) ? some(value.value) : none();
 }
-function normalizedFormulaText(element) {
+function normalizedText(element) {
     return textContent(element).replace(/\s+/g, " ").trim();
+}
+function normalizedFormulaText(element) {
+    return normalizedText(element);
 }
 function formulaAltText(element, fallback) {
     const altTextElement = firstDirectChild(element, "altText");
